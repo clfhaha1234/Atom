@@ -58,14 +58,34 @@ Atoms 是一个类似 Lovable.dev 的产品，帮助用户通过对话将想法�
 
 ### Phase 5: AI 智能体 ✅
 - [x] Mike Agent (Supervisor)
-- [x] 简化版工作流实现
+- [x] 完整工作流实现 (Emma → Bob → Alex)
+- [x] 流式响应实现 (SSE)
 - [x] API 集成
-- [ ] 流式响应 (待优化)
+- [x] Prompt 优化（精简输出）
+  - Emma (产品经理): 输出精简为 bullet points
+  - Bob (架构师): 输出精简为技术要点
+  - Alex (工程师): 修复时只输出 diff 部分
 
 ### Phase 6: 代码预览 ✅
-- [x] 代码编辑器集成
-- [x] 代码预览功能
+- [x] 代码编辑器集成 (Monaco Editor)
+- [x] 代码预览功能 (iframe + Blob URL)
 - [x] 运行环境配置
+- [x] TypeScript 到 JavaScript 转换
+  - 自动移除 import 语句
+  - 自动移除 TypeScript 接口和类型注解
+  - 自动移除 React.FC 类型注解
+  - 自动移除泛型类型参数
+- [x] 浏览器预览模式（简单前端应用）
+- [x] 沙盒环境支持（Daytona，复杂应用）
+
+### Phase 7: 验证和测试 ✅
+- [x] 自动验证预览页面
+- [x] 截图功能
+- [x] AI 分析截图（可选）
+- [x] 自动修复流程
+- [x] 测试脚本完善
+  - test-sandbox-screenshot.ts (沙盒预览测试)
+  - test-calculator.ts (完整流程测试)
 
 ## 项目结构
 
@@ -109,15 +129,55 @@ Atom/
 2. ✅ Supabase 认证集成
 3. ✅ 聊天界面 UI (左侧对话，右侧代码预览)
 4. ✅ 消息组件和输入组件
-5. ✅ AI 智能体基础实现 (Mike, Emma, Bob, Alex)
+5. ✅ AI 智能体完整实现 (Mike, Emma, Bob, Alex)
+   - 流式响应支持
+   - 完整工作流执行
+   - Prompt 优化（精简输出）
 6. ✅ 代码预览组件 (Monaco Editor + iframe)
+   - 代码编辑器（Monaco Editor）
+   - Web 预览（iframe + Blob URL）
+   - TypeScript 自动转换
+7. ✅ 沙盒环境支持
+   - Daytona 沙盒集成
+   - 浏览器预览模式（降级）
+   - 自动部署到沙盒
+8. ✅ 验证和测试功能
+   - 自动验证预览页面
+   - 截图功能
+   - 自动修复流程
+   - 测试脚本完善
+
+## 最新改进（2025-01）
+
+### 代码生成优化 ✅
+- 完善的 TypeScript 清理逻辑
+  - 移除所有 import 语句（包括 CSS import）
+  - 移除 TypeScript 接口定义
+  - 移除 React.FC 和类型注解
+  - 移除泛型类型参数
+- 修复了验证失败时错误信息被当作代码的问题
+- 改进了修复流程，区分原始需求和错误信息
+
+### Prompt 优化 ✅
+- Emma (产品经理): 输出精简为 bullet points，每个要点一行
+- Bob (架构师): 输出精简为技术要点，避免冗长描述
+- Alex (工程师): 修复时优先显示 diff 部分，完整代码放在最后
+
+### 测试脚本完善 ✅
+- test-sandbox-screenshot.ts: 沙盒预览功能测试
+- test-calculator.ts: 完整工作流测试
+- 智能等待逻辑（替代固定延迟）
+- 详细的页面内容分析
+- 调试截图功能
 
 ## 下一步行动
 1. ⚠️ 配置环境变量 (.env) - 需要用户配置
-2. ⚠️ 测试前后端连接 - 需要启动服务器测试
-3. 🔄 优化 AI 响应流程 - 可以改进为流式响应
-4. 🔄 完善代码预览功能 - 可以支持更多文件类型
-5. 🔄 添加错误处理 - 需要完善错误边界和提示
+   - ANTHROPIC_API_KEY (必需)
+   - DAYTONA_API_KEY (可选，用于沙盒)
+   - SUPABASE_URL, SUPABASE_ANON_KEY (必需)
+2. 🔄 完善错误处理 - 改进错误边界和提示
+3. 🔄 性能优化 - 代码分割、虚拟滚动
+4. 🔄 功能增强 - 支持更多文件类型、代码编辑
 
 ## 快速启动
 
