@@ -10,14 +10,14 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
 export function ChatInput() {
   const [input, setInput] = useState('')
   const navigate = useNavigate()
-  const { addMessage, setTyping } = useChatStore()
+  const { addMessage, setTyping, isTyping } = useChatStore()
   const { currentProjectId, setCurrentProject, createProject } = useProjectStore()
   const { user } = useAuthStore()
   const { saveMessage } = useMessageStore()
   
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!input.trim()) return
+    if (!input.trim() || isTyping) return  // 如果正在处理，禁止提交
     
     const userMessage = {
       id: Date.now().toString(),
@@ -257,20 +257,28 @@ export function ChatInput() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !isTyping) {
               e.preventDefault()
               handleSubmit(e)
             }
           }}
-          className="flex-1 px-6 py-4 border border-gray-300 rounded-2xl resize-none focus:outline-none focus:ring-2 focus:ring-purple-500"
-          placeholder="描述你想做的项目..."
+          disabled={isTyping}
+          className={`flex-1 px-6 py-4 border border-gray-300 rounded-2xl resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 ${
+            isTyping ? 'bg-gray-100 cursor-not-allowed text-gray-500' : ''
+          }`}
+          placeholder={isTyping ? 'AI 正在处理中，请稍候...' : '描述你想做的项目...'}
           rows={1}
         />
         <button 
           type="submit"
-          className="px-8 py-4 gradient-bg text-white rounded-2xl font-semibold hover:opacity-90 transition-opacity"
+          disabled={isTyping}
+          className={`px-8 py-4 rounded-2xl font-semibold transition-opacity ${
+            isTyping 
+              ? 'bg-gray-400 text-gray-200 cursor-not-allowed' 
+              : 'gradient-bg text-white hover:opacity-90'
+          }`}
         >
-          发送
+          {isTyping ? '处理中...' : '发送'}
         </button>
       </div>
     </form>
