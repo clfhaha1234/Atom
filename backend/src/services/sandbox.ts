@@ -54,10 +54,10 @@ export class SandboxService {
       const { stdout, stderr } = await execAsync(command, {
         env: {
           ...process.env,
-          DAYTONA_API_KEY: process.env.DAYTONA_API_KEY || '',
-          DAYTONA_SERVER_URL: process.env.DAYTONA_SERVER_URL || 'https://app.daytona.io/api',
-          DAYTONA_TARGET: process.env.DAYTONA_TARGET || 'us',
-          DAYTONA_SANDBOX_IMAGE: process.env.DAYTONA_SANDBOX_IMAGE || 'whitezxj/sandbox:0.1.0',
+          DAYTONA_API_KEY: process.env.DAYTONA_API_KEY,
+          DAYTONA_SERVER_URL: process.env.DAYTONA_SERVER_URL,
+          DAYTONA_TARGET: process.env.DAYTONA_TARGET,
+          DAYTONA_SANDBOX_IMAGE: process.env.DAYTONA_SANDBOX_IMAGE,
         },
         maxBuffer: 10 * 1024 * 1024, // 10MB
       })
@@ -135,15 +135,55 @@ export class SandboxService {
   
   /**
    * 在沙盒中写入文件
+   * 使用 stdin 传递文件内容，避免命令行长度限制
    */
   async writeFile(sandboxId: string, filePath: string, content: string): Promise<void> {
-    // 转义内容中的特殊字符
-    const escapedContent = content.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    const result = await this.callPythonScript('write_file', sandboxId, filePath, escapedContent)
+    const { spawn } = require('child_process')
     
-    if (!result.success) {
-      throw new Error(result.error || 'Failed to write file')
-    }
+    return new Promise((resolve, reject) => {
+      const args = [this.pythonScriptPath, 'write_file_stdin', sandboxId, filePath]
+      const child = spawn('python3', args, {
+        env: {
+          ...process.env,
+          DAYTONA_API_KEY: process.env.DAYTONA_API_KEY,
+          DAYTONA_SERVER_URL: process.env.DAYTONA_SERVER_URL,
+          DAYTONA_TARGET: process.env.DAYTONA_TARGET,
+          DAYTONA_SANDBOX_IMAGE: process.env.DAYTONA_SANDBOX_IMAGE,
+        },
+      })
+      
+      let stdout = ''
+      let stderr = ''
+      
+      child.stdout.on('data', (data: Buffer) => {
+        stdout += data.toString()
+      })
+      
+      child.stderr.on('data', (data: Buffer) => {
+        stderr += data.toString()
+      })
+      
+      child.on('close', (code: number) => {
+        try {
+          const result = JSON.parse(stdout.trim())
+          if (result.success) {
+            resolve()
+          } else {
+            reject(new Error(result.error || 'Failed to write file'))
+          }
+        } catch (e) {
+          reject(new Error(`Failed to parse response: ${stdout}\n${stderr}`))
+        }
+      })
+      
+      child.on('error', (err: Error) => {
+        reject(err)
+      })
+      
+      // 通过 stdin 传递文件内容
+      child.stdin.write(content)
+      child.stdin.end()
+    })
   }
   
   /**
@@ -189,21 +229,16 @@ export class SandboxService {
       file.includes('database')
     )
     
-    // 检查是否有 package.json 且包含后端依赖
+    if (hasBackend) return true
+
+    // 检查是否有 package.json
     if (code['package.json']) {
-      try {
-        const pkg = JSON.parse(code['package.json'])
-        const backendDeps = ['express', 'fastify', 'koa', 'nestjs', 'prisma', 'mongoose']
-        const hasBackendDep = Object.keys(pkg.dependencies || {})
-          .some(dep => backendDeps.includes(dep))
-        
-        if (hasBackendDep) return true
-      } catch {
-        // 解析失败，继续检查
-      }
+      // 只要有 package.json，就认为是一个完整的项目，可以使用沙盒运行
+      // 这样可以支持 React、Vue 等前端项目的在线预览
+      return true
     }
     
-    return hasBackend
+    return false
   }
 }
 

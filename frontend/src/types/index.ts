@@ -13,6 +13,8 @@ export interface SandboxInfo {
   sandboxId: string
   vncUrl?: string
   websiteUrl?: string
+  type?: 'daytona' | 'static'
+  previewHtml?: string
 }
 
 export interface ErrorInfo {

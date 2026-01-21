@@ -521,7 +521,43 @@ PRD: ${state.prd || '暂无'}
     : `作为工程师 Alex,为以下项目生成代码。
 请以 JSON 格式返回结果，包含以下字段：
 1. explanation: 简洁的实现说明
-2. files: 包含所有代码文件的对象（Record<string, string>），必须包含 App.tsx, index.css, package.json
+2. files: 包含所有代码文件的对象（Record<string, string>）
+
+⚠️ 代码生成规范（必须严格遵守）：
+- 只生成以下 4 个文件，不要创建其他文件或目录：
+  1. index.html - 入口文件
+  2. App.tsx - **所有 React 组件代码都写在这一个文件里**（不要拆分成多个文件！）
+  3. index.css - 样式文件
+  4. package.json - 依赖信息
+- ⚠️ 禁止创建 src/ 目录、components/ 目录或任何子组件文件
+- ⚠️ 所有组件（Button, Header, Card 等）都必须定义在 App.tsx 中
+- 不要使用 Next.js、Nuxt、Vite 等需要构建的框架
+- 不要使用相对导入（如 import X from './X'）
+- 所有代码必须能在浏览器中通过 Babel 直接运行
+- index.html 模板：
+  \`\`\`html
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App</title>
+    <script crossorigin src="https://cdn.staticfile.org/react/18.2.0/umd/react.development.js"></script>
+    <script crossorigin src="https://cdn.staticfile.org/react-dom/18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://cdn.staticfile.org/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="index.css">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" src="App.tsx"></script>
+    <script type="text/babel">
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
+  </html>
+  \`\`\`
 
 用户需求: ${state.originalUserMessage || state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]}
 PRD: ${state.prd || '暂无'}
@@ -588,8 +624,29 @@ ${state.userMessage.includes('⚠️ 修复要求') ? `\n\n修复要求: ${state
       } else {
         const originalReq = state.originalUserMessage || state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]
         code = {
-          'App.tsx': `import React from 'react';\n\nexport default function App() {\n  return (\n    <div>\n      <h1>${originalReq}</h1>\n    </div>\n  );\n}`,
-          'index.css': 'body { margin: 0; padding: 20px; font-family: sans-serif; }',
+          'index.html': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>App</title>
+  <script crossorigin src="https://cdn.staticfile.org/react/18.2.0/umd/react.development.js"></script>
+  <script crossorigin src="https://cdn.staticfile.org/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdn.staticfile.org/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" src="App.tsx"></script>
+  <script type="text/babel">
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>`,
+          'App.tsx': `const { useState } = React;\n\nexport default function App() {\n  return (\n    <div className="p-4">\n      <h1 className="text-2xl font-bold">${originalReq}</h1>\n    </div>\n  );\n}`,
+          'index.css': 'body { margin: 0; font-family: sans-serif; }',
           'package.json': JSON.stringify({ name: 'app', version: '1.0.0', dependencies: { react: '^18.0.0' } }, null, 2),
         }
       }
@@ -602,11 +659,34 @@ ${state.userMessage.includes('⚠️ 修复要求') ? `\n\n修复要求: ${state
     }
   } catch (error) {
     console.error('Alex code gen error:', error)
+    const fallbackCode = {
+      'index.html': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>App</title>
+  <script crossorigin src="https://cdn.staticfile.org/react/18.2.0/umd/react.development.js"></script>
+  <script crossorigin src="https://cdn.staticfile.org/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdn.staticfile.org/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    function App() {
+      return <div className="p-4"><h1 className="text-2xl">Error loading app</h1></div>;
+    }
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>`,
+      'App.tsx': `function App() {\n  return <div className="p-4"><h1 className="text-2xl">Error loading app</h1></div>;\n}\nexport default App;`,
+    }
     return {
       ...state,
-      code: {
-        'App.tsx': `import React from 'react';\n\nexport default function App() {\n  return <div><h1>${state.userMessage}</h1></div>;\n}`,
-      },
+      code: fallbackCode,
       currentStatus: 'complete',
     }
   }
@@ -636,13 +716,20 @@ PRD: ${state.prd || '暂无'}
     : `作为工程师 Alex,为以下项目生成代码。
 请以 JSON 格式返回结果，包含以下字段：
 1. explanation: 简洁的实现说明
-2. files: 包含所有代码文件的对象（Record<string, string>），必须包含 App.tsx, index.css, package.json
+2. files: 包含所有代码文件的对象（Record<string, string>）
+
+⚠️ 代码生成规范（必须严格遵守）：
+- 只生成 4 个文件：index.html、App.tsx、index.css、package.json
+- ⚠️ 所有组件代码都写在 App.tsx 一个文件里，禁止拆分多文件
+- ⚠️ 禁止创建 src/ 目录或 components/ 目录
+- 不要使用 Next.js/Nuxt/Vite 等需要构建的框架
+- 不要使用相对导入（import X from './X'）
 
 用户需求: ${state.userMessage}
 PRD: ${state.prd || '暂无'}
 架构: ${state.architecture || '暂无'}
 
-请生成一个简单的 React 应用。只返回 JSON，不要包含其他解释文本。`
+只返回 JSON，不要包含其他解释文本。`
 
   try {
     const response = await getClient().chat.completions.create({
@@ -1078,7 +1165,11 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
                 }
                 
                 // 如果没有 index.html 但有 React 组件，生成一个 index.html
-                if (!state.code['index.html']) {
+                // 注意：Next.js 项目不需要生成 index.html
+                const pkgContent = state.code['package.json']
+                const isNextJsProject = pkgContent && (pkgContent.includes('"next"') || pkgContent.includes("'next'"))
+                
+                if (!state.code['index.html'] && !isNextJsProject) {
                   const mainFile = state.code['App.tsx'] || state.code['App.jsx'] || state.code['app.tsx'] || state.code['app.jsx']
                   if (mainFile) {
                     const cssContent = state.code['index.css'] || state.code['App.css'] || state.code['styles.css'] || ''
@@ -1088,9 +1179,9 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Preview</title>
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script crossorigin src="https://cdn.staticfile.org/react/18.2.0/umd/react.development.js"></script>
+  <script crossorigin src="https://cdn.staticfile.org/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdn.staticfile.org/babel-standalone/7.23.5/babel.min.js"></script>
   <style>
     body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
     ${cssContent}
@@ -1137,20 +1228,26 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
                   }
                 }
                 
-                // 先杀掉可能占用 8080 端口的默认服务
+                // 先杀掉可能占用 8080 端口的默认服务（如 FastAPI/uvicorn）
                 try {
+                  // 尝试多种方式杀掉 8080 端口的进程
                   await sandboxService.runCommand(
                     sandboxResult.containerId,
-                    'pkill -f "port.*8080" || fuser -k 8080/tcp || kill $(lsof -t -i:8080) || true',
+                    `pkill -9 -f uvicorn || true; \
+                     pkill -9 -f fastapi || true; \
+                     pkill -9 -f "python.*8080" || true; \
+                     pkill -9 -f ":8080" || true; \
+                     fuser -k 8080/tcp 2>/dev/null || true; \
+                     kill -9 $(lsof -t -i:8080) 2>/dev/null || true`,
                     true,
-                    10
+                    15
                   )
                   console.log('Killed existing process on port 8080')
                   // 等待端口释放
-                  await new Promise(resolve => setTimeout(resolve, 1000))
+                  await new Promise(resolve => setTimeout(resolve, 2000))
                 } catch (error) {
                   // 忽略错误，可能没有进程在运行
-                  console.log('No existing process on port 8080 or failed to kill')
+                  console.log('No existing process on port 8080 or failed to kill:', error)
                 }
                 
                 // 启动 Web 服务器
@@ -1159,8 +1256,23 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
                 if (state.code['package.json']) {
                   try {
                     const pkg = JSON.parse(state.code['package.json'])
+                    const isNextJs = pkg.dependencies?.next || pkg.devDependencies?.next
+                    
                     if (pkg.scripts && (pkg.scripts.start || pkg.scripts.dev)) {
-                      const startCmd = pkg.scripts.dev ? 'npm run dev' : 'npm start'
+                      let startCmd: string
+                      
+                      if (isNextJs) {
+                        // Next.js 需要特殊的启动参数
+                        if (pkg.scripts.dev) {
+                          startCmd = 'npx next dev -H 0.0.0.0 -p 8080'
+                        } else {
+                          startCmd = 'npx next start -H 0.0.0.0 -p 8080'
+                        }
+                        console.log('Detected Next.js project, using:', startCmd)
+                      } else {
+                        startCmd = pkg.scripts.dev ? 'npm run dev' : 'npm start'
+                      }
+                      
                       // 设置 PORT 和 HOST 确保服务器绑定到正确的地址
                       await sandboxService.runCommand(
                         sandboxResult.containerId,
@@ -1200,15 +1312,24 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
                   }
                 }
                 
-                // 等待服务器启动
-                await new Promise(resolve => setTimeout(resolve, 3000))
-                console.log('Web server should be ready now')
+                // 等待服务器启动（Next.js 等框架需要更长时间）
+                const pkgForWait = state.code['package.json']
+                const isFrameworkProject = pkgForWait && (
+                  pkgForWait.includes('"next"') || 
+                  pkgForWait.includes('"vite"') ||
+                  pkgForWait.includes('"nuxt"')
+                )
+                const waitTime = isFrameworkProject ? 8000 : 3000
+                await new Promise(resolve => setTimeout(resolve, waitTime))
+                console.log(`Web server should be ready now (waited ${waitTime}ms)`)
                 
                 sandboxInfo = {
                   sandboxId: sandboxResult.containerId,
                   vncUrl: sandboxResult.vncUrl,
                   websiteUrl: sandboxResult.websiteUrl,
+                  type: 'daytona'  // 标记为沙盒类型
                 }
+                console.log('Sandbox created successfully:', sandboxInfo)
               }
             } catch (error) {
               console.error('Failed to create sandbox:', error)

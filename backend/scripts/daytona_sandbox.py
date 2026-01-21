@@ -51,7 +51,7 @@ def get_daytona_client() -> Daytona:
     try:
         config = DaytonaConfig(
             api_key=api_key,
-            server_url=server_url,
+            api_url=server_url,  # 使用 api_url 替代已废弃的 server_url
             target=target,
         )
     except TypeError as e:
@@ -94,9 +94,9 @@ def create_sandbox(password: str = "123456", project_id: Optional[str] = None) -
                 "CHROME_CDP": "",
             },
             resources=Resources(
-                cpu=2,
-                memory=4,
-                disk=5,
+                cpu=1,      # 减少 CPU 核心
+                memory=2,   # 减少到 2GB 内存
+                disk=3,     # 减少磁盘空间
             ),
             auto_stop_interval=15,
             auto_archive_interval=24 * 60,
@@ -113,7 +113,7 @@ def create_sandbox(password: str = "123456", project_id: Optional[str] = None) -
                 session_id,
                 SessionExecuteRequest(
                     command="exec /usr/bin/supervisord -n -c /etc/supervisor/conf.d/supervisord.conf",
-                    var_async=True,
+                    run_async=True,  # 使用 run_async 替代已废弃的 var_async
                 ),
             )
         except Exception as e:
@@ -144,6 +144,20 @@ def create_sandbox(password: str = "123456", project_id: Optional[str] = None) -
         return {
             "success": False,
             "error": error_msg,
+        }
+
+
+def write_file_stdin(sandbox_id: str, file_path: str) -> Dict[str, Any]:
+    """从 stdin 读取内容并写入沙盒文件"""
+    try:
+        # 从 stdin 读取全部内容
+        content = sys.stdin.read()
+        return write_file(sandbox_id, file_path, content)
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": f"{str(e)}\n{traceback.format_exc()}",
         }
 
 
@@ -312,6 +326,17 @@ def main():
             file_path = sys.argv[3]
             content = sys.argv[4]
             result = write_file(sandbox_id, file_path, content)
+            print(json.dumps(result))
+        
+        elif action == "write_file_stdin":
+            if len(sys.argv) < 4:
+                print(json.dumps({
+                    "error": "Usage: write_file_stdin <sandbox_id> <file_path> (content via stdin)"
+                }), file=sys.stderr)
+                sys.exit(1)
+            sandbox_id = sys.argv[2]
+            file_path = sys.argv[3]
+            result = write_file_stdin(sandbox_id, file_path)
             print(json.dumps(result))
         
         elif action == "run_command":
