@@ -114,8 +114,37 @@ async function testVerifyAndFix(): Promise<TestResult> {
     console.log(`✅ 生成代码文件: ${Object.keys(initialCode).join(', ')}`)
     console.log(`📊 代码统计: App.tsx ${initialCode['App.tsx'].length} 字符\n`)
     
-    // 2. 验证预览页面
-    console.log('🔍 步骤 2: 验证预览页面...')
+    // 2. 保存初始代码到数据库（模拟已有项目状态）
+    console.log('💾 步骤 2: 保存初始代码到数据库...')
+    try {
+      const { supabase } = await import('../src/lib/supabase')
+      if (supabase) {
+        const stateToSave = {
+          prd: '计算器应用，支持基本四则运算',
+          architecture: 'React 组件，使用 useState 管理状态',
+          code: initialCode,
+          currentStatus: 'complete',
+        }
+        
+        await supabase
+          .from('project_states')
+          .upsert({
+            project_id: 'test-verify-fix',
+            user_id: 'test-user',
+            state: stateToSave,
+            updated_at: new Date().toISOString(),
+          }, {
+            onConflict: 'project_id,user_id'
+          })
+        console.log('   ✅ 初始状态已保存')
+      }
+    } catch (e) {
+      console.warn(`   ⚠️  保存状态失败（继续测试）: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    console.log()
+    
+    // 3. 验证预览页面
+    console.log('🔍 步骤 3: 验证预览页面...')
     const verifyResult = await verifyPreview({
       code: initialCode,
       userRequirement: '做一个计算器，包含数字按钮、四则运算符（+、-、×、÷）、等号按钮、清除按钮和小数点按钮',
@@ -137,14 +166,15 @@ async function testVerifyAndFix(): Promise<TestResult> {
     }
     console.log()
     
-    // 3. 如果发现问题，触发修复流程
+    // 4. 如果发现问题，触发修复流程
     if (!verifyResult.passed && verifyResult.needsImprovement) {
-      console.log('🔧 步骤 3: 触发修复流程...')
+      console.log('🔧 步骤 4: 触发修复流程...')
       
-      // 构建修复请求
+      // 构建修复请求 - 使用更明确的修复关键词
       const originalReq = '做一个计算器，包含数字按钮、四则运算符（+、-、×、÷）、等号按钮、清除按钮和小数点按钮'
       const issuesText = verifyResult.issues.join('\n')
-      const repairMessage = `${originalReq}\n\n⚠️ 修复要求：预览页面验证发现问题，请修复以下问题：\n${issuesText}\n\n请确保生成的代码是完整的、可运行的 React 组件，不要包含错误信息文本。`
+      // 使用明确的修复关键词，确保被识别为修复请求
+      const repairMessage = `修复代码：${originalReq}\n\n预览页面验证发现问题，请修复以下问题：\n${issuesText}\n\n请确保生成的代码是完整的、可运行的 React 组件，包含所有必需的功能。`
       
       console.log(`📝 修复请求:`)
       console.log(`   原始需求: ${originalReq}`)
@@ -154,52 +184,168 @@ async function testVerifyAndFix(): Promise<TestResult> {
       // 执行修复流程（使用流式 API）
       let fixedCode: Record<string, string> | null = null
       let lastCodeArtifact: any = null
+      let iterationCount = 0
+      let chunkCount = 0
+      const maxIterations = 50 // 增加最大迭代次数（修复流程可能需要更多时间）
+      const maxChunks = 1000 // 最大块数（防止无限循环）
+      let hasSeenAlexStart = false
+      let hasSeenAlexComplete = false
+      const startTime = Date.now()
+      const maxWaitTime = 5 * 60 * 1000 // 最大等待时间：5分钟
       
       console.log('⏳ 等待 Alex 修复代码...')
+      console.log('   ⚠️  注意：修复流程可能需要几分钟时间，请耐心等待...')
+      console.log(`   ⏱️  最大等待时间: ${maxWaitTime / 1000 / 60} 分钟\n`)
       
       // 创建 Mike agent 并调用流式工作流
       const mikeAgent = createMikeAgent()
       
-      for await (const chunk of mikeAgent.invokeStream({
-        userMessage: repairMessage,
-        projectId: 'test-verify-fix',
-        userId: 'test-user',
-        conversationHistory: [],
-      })) {
-        if (typeof chunk === 'object' && 'type' in chunk) {
-          if (chunk.type === 'agent_complete' && chunk.agent === 'alex') {
-            // 找到代码 artifact
-            if (chunk.artifacts) {
-              const codeArtifact = chunk.artifacts.find((a: any) => a.type === 'code')
-              if (codeArtifact && codeArtifact.content) {
-                if (typeof codeArtifact.content === 'object' && !Array.isArray(codeArtifact.content)) {
-                  fixedCode = codeArtifact.content as Record<string, string>
-                  lastCodeArtifact = codeArtifact
-                  console.log(`   ✅ 获取到修复后的代码: ${Object.keys(fixedCode).join(', ')}`)
-                }
-              }
-            }
-          } else if (chunk.type === 'complete') {
-            // 最终完成，提取代码
-            if (chunk.artifacts) {
-              const codeArtifact = chunk.artifacts.find((a: any) => a.type === 'code')
-              if (codeArtifact && codeArtifact.content) {
-                if (typeof codeArtifact.content === 'object' && !Array.isArray(codeArtifact.content)) {
-                  fixedCode = codeArtifact.content as Record<string, string>
-                  lastCodeArtifact = codeArtifact
-                  console.log(`   ✅ 从完成消息获取代码: ${Object.keys(fixedCode).join(', ')}`)
-                }
-              }
-            }
+      try {
+        const stream = mikeAgent.invokeStream({
+          userMessage: repairMessage,
+          projectId: 'test-verify-fix',
+          userId: 'test-user',
+          conversationHistory: [],
+        })
+        
+        // 添加超时包装器
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(`修复流程超时（超过 ${maxWaitTime / 1000 / 60} 分钟）`))
+          }, maxWaitTime)
+        })
+        
+        const streamPromise = (async () => {
+          for await (const chunk of stream) {
+          chunkCount++
+          const elapsedTime = Date.now() - startTime
+          
+          // 防止无限循环
+          if (chunkCount > maxChunks) {
+            console.warn(`   ⚠️ 达到最大块数 (${maxChunks})，停止等待`)
+            break
           }
-        } else if (typeof chunk === 'object' && 'code' in chunk) {
-          // 如果返回的是 ProjectState，提取代码
-          const state = chunk as any
-          if (state.code && typeof state.code === 'object' && !Array.isArray(state.code) && Object.keys(state.code).length > 0) {
-            fixedCode = state.code as Record<string, string>
-            console.log(`   ✅ 从状态获取代码: ${Object.keys(fixedCode).join(', ')}`)
+          
+          // 超时检查
+          if (elapsedTime > maxWaitTime) {
+            console.warn(`   ⚠️ 超过最大等待时间 (${maxWaitTime / 1000 / 60} 分钟)，停止等待`)
+            break
+          }
+          
+          // 每100个块输出一次进度
+          if (chunkCount % 100 === 0) {
+            const minutes = Math.floor(elapsedTime / 60000)
+            const seconds = Math.floor((elapsedTime % 60000) / 1000)
+            console.log(`   ⏳ 处理中... (已处理 ${chunkCount} 个块, 耗时 ${minutes}m ${seconds}s)`)
+          }
+          
+          if (typeof chunk === 'object' && 'type' in chunk) {
+            // 显示进度
+            if (chunk.type === 'agent_start') {
+              const agent = chunk.agent?.toUpperCase() || 'UNKNOWN'
+              console.log(`   🚀 ${agent} 开始工作...`)
+              if (chunk.agent === 'alex') {
+                hasSeenAlexStart = true
+              }
+            } else if (chunk.type === 'agent_complete') {
+              const agent = chunk.agent?.toUpperCase() || 'UNKNOWN'
+              console.log(`   ✅ ${agent} 完成工作`)
+              if (chunk.agent === 'alex') {
+                hasSeenAlexComplete = true
+                // 找到代码 artifact
+                if (chunk.artifacts) {
+                  const codeArtifact = chunk.artifacts.find((a: any) => a.type === 'code')
+                  if (codeArtifact && codeArtifact.content) {
+                    if (typeof codeArtifact.content === 'object' && !Array.isArray(codeArtifact.content)) {
+                      const newCode = codeArtifact.content as Record<string, string>
+                      // 检查是否真的修复了（和原始代码不同）
+                      if (JSON.stringify(newCode) !== JSON.stringify(initialCode)) {
+                        fixedCode = newCode
+                        lastCodeArtifact = codeArtifact
+                        console.log(`   ✅ 获取到修复后的代码: ${Object.keys(fixedCode).join(', ')}`)
+                        console.log(`   📊 代码文件数: ${Object.keys(fixedCode).length}`)
+                      } else {
+                        console.warn(`   ⚠️  代码未变化，可能修复未完成`)
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (chunk.type === 'complete') {
+              console.log(`   🎉 工作流完成`)
+              // 最终完成，提取代码
+              if (chunk.artifacts) {
+                const codeArtifact = chunk.artifacts.find((a: any) => a.type === 'code')
+                if (codeArtifact && codeArtifact.content) {
+                  if (typeof codeArtifact.content === 'object' && !Array.isArray(codeArtifact.content)) {
+                    const newCode = codeArtifact.content as Record<string, string>
+                    // 检查是否真的修复了
+                    if (JSON.stringify(newCode) !== JSON.stringify(initialCode)) {
+                      fixedCode = newCode
+                      lastCodeArtifact = codeArtifact
+                      console.log(`   ✅ 从完成消息获取代码: ${Object.keys(fixedCode).join(', ')}`)
+                    }
+                  }
+                }
+              }
+              // 完成消息后可以退出
+              break
+            } else if (chunk.type === 'error') {
+              const errorChunk = chunk as any
+              console.error(`   ❌ 错误: ${errorChunk.error || 'Unknown error'}`)
+              break
+            }
+          } else if (typeof chunk === 'object' && 'code' in chunk) {
+            // 如果返回的是 ProjectState，提取代码
+            const state = chunk as any
+            if (state.code && typeof state.code === 'object' && !Array.isArray(state.code) && Object.keys(state.code).length > 0) {
+              const newCode = state.code as Record<string, string>
+              // 检查是否真的修复了
+              if (JSON.stringify(newCode) !== JSON.stringify(initialCode)) {
+                fixedCode = newCode
+                console.log(`   ✅ 从状态获取代码: ${Object.keys(fixedCode).join(', ')}`)
+              }
+            }
           }
         }
+        })()
+        
+        // 等待流式处理完成或超时
+        try {
+          await Promise.race([streamPromise, timeoutPromise])
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('超时')) {
+            console.warn(`   ⚠️ ${error.message}`)
+            console.warn(`   💡 修复流程可能需要更长时间，或检查修复请求是否正确`)
+          } else {
+            throw error
+          }
+        }
+      } catch (error) {
+        console.error(`   ❌ 修复流程出错: ${error instanceof Error ? error.message : String(error)}`)
+        if (error instanceof Error && error.stack) {
+          console.error(`   堆栈: ${error.stack.split('\n').slice(0, 3).join('\n')}`)
+        }
+      }
+      
+      // 检查是否看到 Alex 完成
+      const elapsedTime = Date.now() - startTime
+      const elapsedMinutes = Math.floor(elapsedTime / 60000)
+      const elapsedSeconds = Math.floor((elapsedTime % 60000) / 1000)
+      
+      console.log(`\n   📊 修复流程统计:`)
+      console.log(`      总块数: ${chunkCount}`)
+      console.log(`      耗时: ${elapsedMinutes}m ${elapsedSeconds}s`)
+      console.log(`      Alex 开始: ${hasSeenAlexStart ? '✅' : '❌'}`)
+      console.log(`      Alex 完成: ${hasSeenAlexComplete ? '✅' : '❌'}`)
+      
+      if (!hasSeenAlexComplete && hasSeenAlexStart) {
+        console.warn(`   ⚠️  看到 Alex 开始但未看到完成，可能仍在处理中...`)
+      }
+      
+      if (elapsedTime > maxWaitTime / 2 && !fixedCode) {
+        console.warn(`   ⚠️  已经等待了 ${elapsedMinutes} 分钟，仍未获取到修复后的代码`)
+        console.warn(`   💡 提示：修复流程可能需要更长时间，或者修复请求需要更明确`)
       }
       
       // 如果流式 API 没有返回代码，尝试从状态中获取
@@ -207,6 +353,50 @@ async function testVerifyAndFix(): Promise<TestResult> {
         if (typeof lastCodeArtifact.content === 'object' && !Array.isArray(lastCodeArtifact.content)) {
           fixedCode = lastCodeArtifact.content as Record<string, string>
         }
+      }
+      
+      // 如果仍然没有代码，尝试从数据库加载最新状态
+      if (!fixedCode || Object.keys(fixedCode).length === 0) {
+        console.log('   ⚠️  从流中未获取到代码，尝试从数据库加载...')
+        try {
+          // 等待一小段时间，让数据库有机会更新
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          
+          const { supabase } = await import('../src/lib/supabase')
+          if (supabase) {
+            const { data, error } = await supabase
+              .from('project_states')
+              .select('state')
+              .eq('project_id', 'test-verify-fix')
+              .eq('user_id', 'test-user')
+              .order('updated_at', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+            
+            if (!error && data && data.state) {
+              const state = typeof data.state === 'string' ? JSON.parse(data.state) : data.state
+              if (state.code && typeof state.code === 'object' && Object.keys(state.code).length > 0) {
+                const dbCode = state.code as Record<string, string>
+                // 检查是否真的修复了（和原始代码不同）
+                if (JSON.stringify(dbCode) !== JSON.stringify(initialCode)) {
+                  fixedCode = dbCode
+                  console.log(`   ✅ 从数据库获取到修复后的代码: ${Object.keys(fixedCode).join(', ')}`)
+                  console.log(`   📊 代码确实已修复（与原始代码不同）`)
+                } else {
+                  console.warn(`   ⚠️  数据库中的代码与原始代码相同，修复可能未完成`)
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`   ⚠️  从数据库加载失败: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      
+      // 检查修复后的代码是否真的修复了
+      if (fixedCode && JSON.stringify(fixedCode) === JSON.stringify(initialCode)) {
+        console.warn(`   ⚠️  警告：修复后的代码与原始代码完全相同，修复可能未完成`)
+        console.warn(`   💡 提示：修复流程可能需要更长时间，或者修复请求需要更明确`)
       }
       
       if (fixedCode && Object.keys(fixedCode).length > 0) {
@@ -219,8 +409,8 @@ async function testVerifyAndFix(): Promise<TestResult> {
         })
         console.log()
         
-        // 4. 验证修复后的代码
-        console.log('🔍 步骤 4: 验证修复后的代码...')
+        // 5. 验证修复后的代码
+        console.log('🔍 步骤 5: 验证修复后的代码...')
         const verifyResultAfterFix = await verifyPreview({
           code: fixedCode,
           userRequirement: originalReq,
@@ -247,7 +437,7 @@ async function testVerifyAndFix(): Promise<TestResult> {
           fs.mkdirSync(outputDir, { recursive: true })
         }
         
-        console.log('💾 步骤 5: 保存代码到文件...')
+        console.log('💾 步骤 6: 保存代码到文件...')
         Object.entries(fixedCode).forEach(([file, content]) => {
           const filePath = path.join(outputDir, `fixed-${file}`)
           fs.writeFileSync(filePath, content as string, 'utf-8')
@@ -313,6 +503,8 @@ async function main() {
   if (result.fixedCode) {
     console.log(`🔧 修复完成: 是`)
     console.log(`📁 修复后文件: ${Object.keys(result.fixedCode).join(', ')}`)
+  } else {
+    console.log(`🔧 修复完成: 否`)
   }
   if (result.issues && result.issues.length > 0) {
     console.log(`⚠️ 修复后剩余问题: ${result.issues.length}`)
