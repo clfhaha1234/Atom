@@ -31,18 +31,31 @@ export function ChatPage() {
     .flatMap(m => m.artifacts || [])
     .find(a => a.type === 'code')
 
+  // 使用 ref 防止重复加载
+  const hasInitializedRef = useRef(false)
+  const lastProjectIdRef = useRef<string | null>(null)
+  
   useEffect(() => {
+    const projectIdFromUrl = searchParams.get('projectId')
+    
+    // 防止重复初始化（只在首次或项目切换时执行）
+    if (hasInitializedRef.current && lastProjectIdRef.current === projectIdFromUrl) {
+      return
+    }
+    
     checkAuth().then(async () => {
       if (!user) {
         navigate('/login')
         return
       }
       
+      // 标记已初始化
+      hasInitializedRef.current = true
+      lastProjectIdRef.current = projectIdFromUrl
+      
       // 加载项目列表（对话历史）
       await fetchProjects(user.id)
       
-      // 从 URL 参数获取项目 ID
-      const projectIdFromUrl = searchParams.get('projectId')
       if (projectIdFromUrl) {
         setCurrentProject(projectIdFromUrl)
         
@@ -75,7 +88,7 @@ export function ChatPage() {
         setMessagesLoaded(true)
       }
     })
-  }, [user, navigate, checkAuth, fetchProjects, searchParams, setCurrentProject, fetchMessages, messagesLoaded, messages.length, clearMessages, setMessages])
+  }, [searchParams.get('projectId')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 使用 useRef 跟踪是否已添加欢迎消息，避免重复添加
   const welcomeAddedRef = useRef(false)
@@ -106,6 +119,19 @@ export function ChatPage() {
     await signOut()
     navigate('/')
   }
+  
+  const handleNewChat = () => {
+    // 重置状态
+    clearMessages()
+    setCurrentProject(null)
+    setMessagesLoaded(false)
+    hasInitializedRef.current = false
+    lastProjectIdRef.current = null
+    welcomeAddedRef.current = false
+    
+    // 导航到新对话页面（不带 projectId）
+    navigate('/chat')
+  }
 
   if (!user) {
     return null
@@ -131,6 +157,12 @@ export function ChatPage() {
             ) : (
               <span className="text-sm text-gray-500">新对话</span>
             )}
+            <button
+              onClick={handleNewChat}
+              className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              + 新对话
+            </button>
           </div>
           <div className="flex items-center gap-4">
             <button

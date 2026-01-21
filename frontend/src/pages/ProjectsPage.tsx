@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import { useProjectStore } from '../store/projectStore'
@@ -7,16 +7,31 @@ export function ProjectsPage() {
   const navigate = useNavigate()
   const { user, checkAuth } = useAuthStore()
   const { projects, loading, fetchProjects, deleteProject, setCurrentProject } = useProjectStore()
+  
+  // 使用 ref 防止重复加载
+  const hasLoadedRef = useRef(false)
 
   useEffect(() => {
+    // 防止重复执行
+    if (hasLoadedRef.current) return
+    
     checkAuth().then(() => {
       if (!user) {
         navigate('/login')
       } else {
+        hasLoadedRef.current = true
         fetchProjects(user.id)
       }
     })
-  }, [user, navigate, checkAuth, fetchProjects])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  
+  // 当 user 变化时（如登出后重新登录），重新加载
+  useEffect(() => {
+    if (user && hasLoadedRef.current === false) {
+      hasLoadedRef.current = true
+      fetchProjects(user.id)
+    }
+  }, [user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectProject = (projectId: string) => {
     setCurrentProject(projectId)
