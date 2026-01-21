@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-01-21T01:03:05.850Z",
+  "url": "file:///Users/lifeichen/Atom/backend/temp/preview-1768957371228.html",
+  "pageContent": {
+    "rootHTML": "",
+    "bodyHTML": "\n  <div id=\"root\"></div>\n  <script type=\"text/babel\">\n    const { useState, useCallback, useEffect } = React;\n    ;\n  url;\n}\n\nconst NewsItem = ({ news, onClick }) => {\n  return (\n    <div className=\"news-item\" onClick={() => onClick(news)}>\n      {news.urlToImage && (\n        <img src={news.urlToImage} alt={news.title} className=\"news-image\" />\n      )}\n      <div className=\"news-content\">\n        <h3 className=\"news-title\">{news.title}</h3>\n        <p className=\"news-description\">{news.description}</p>\n        <div className=\"news-meta\">\n          <span className=\"news-source\">{news.source.name}</span>\n          <span className=\"news-time\">{new Date(news.publishedAt).toLocaleTimeString()}</span>\n        </div>\n      </div>\n    </div>\n  );\n};\n\nconst NewsDetail = ({ news, onBack }) => {\n  return (\n    <div className=\"news-detail\">\n      <button className=\"back-button\" onClick={onBack}>← 返回</button>\n      {news.urlToImage && (\n        <img src={news.urlToImage} alt={news.title} className=\"detail-image\" />\n      )}\n      <h1 className=\"detail-title\">{news.title}</h1>\n      <div className=\"detail-meta\">\n        <span className=\"detail-source\">{news.source.name}</span>\n        <span className=\"detail-time\">{new Date(news.publishedAt).toLocaleString()}</span>\n      </div>\n      <p className=\"detail-description\">{news.description}</p>\n      <div className=\"detail-content\">\n        {news.content ? news.content.replace(/\\[\\+\\d+ chars\\]/, '') : news.description}\n      </div>\n      <a href={news.url} target=\"_blank\" rel=\"noopener noreferrer\" className=\"read-more\">\n        阅读原文\n      </a>\n    </div>\n  );\n};\n\nconst CategoryFilter = ({ categories, selectedCategory, onCategoryChange }) => {\n  return (\n    <div className=\"category-filter\">\n      {categories.map(category => (\n        <button\n          key={category}\n          className={`category-button ${selectedCategory === category ? 'active' : ''}`}\n          onClick={() => onCategoryChange(category)}\n        >\n          {catego",
+    "buttonCount": 0,
+    "inputCount": 0,
+    "allText": ""
+  }
+}

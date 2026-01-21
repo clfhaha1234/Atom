@@ -189,8 +189,79 @@ async function captureScreenshot(urlOrCode: string | Record<string, string>): Pr
       timeout: 30000,
     })
     
-    // 等待页面加载完成（额外等待 3 秒，确保 React 渲染完成）
-    await new Promise(resolve => setTimeout(resolve, 3000))
+    // 智能等待 React 组件渲染完成
+    console.log('⏳ 等待 React 编译和渲染...')
+    
+    // 1. 初始等待：Babel 需要时间编译 JSX（使用 @babel/standalone）
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    console.log('✅ Babel 编译等待完成')
+    
+    try {
+      // 2. 等待 root 元素出现
+      await page.waitForSelector('#root', { timeout: 5000 })
+      console.log('✅ 找到 root 元素')
+      
+      // 3. 等待 React 组件渲染完成（检查 root 是否有实际内容）
+      let renderComplete = false
+      const maxRetries = 10
+      for (let i = 0; i < maxRetries; i++) {
+        const rootContent = await page.evaluate(() => {
+          // @ts-ignore - document is available in browser context
+          const root = document.getElementById('root')
+          if (!root) return { hasContent: false, childrenCount: 0, innerHTML: '' }
+          return {
+            hasContent: root.innerHTML.trim().length > 50, // root 有实际内容（不仅仅是空白）
+            childrenCount: root.children.length,
+            innerHTML: root.innerHTML.substring(0, 200),
+          }
+        })
+        
+        if (rootContent.hasContent && rootContent.childrenCount > 0) {
+          console.log(`✅ React 组件已渲染（${rootContent.childrenCount} 个子元素）`)
+          renderComplete = true
+          break
+        }
+        
+        // 如果还没有内容，等待一下再检查
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+      
+      if (!renderComplete) {
+        console.warn('⚠️ React 组件可能未完全渲染')
+        // 获取当前状态用于调试
+        const rootContent = await page.evaluate(() => {
+          // @ts-ignore
+          const root = document.getElementById('root')
+          return root ? root.innerHTML.substring(0, 500) : 'root not found'
+        })
+        console.log(`📄 Root 内容预览: ${rootContent}...`)
+      }
+      
+      // 4. 尝试等待交互元素出现（button, input, a 等），进一步确认页面已渲染
+      try {
+        await page.waitForSelector('button, input, a, [class*="button"], [class*="btn"], [role="button"]', { timeout: 5000 })
+        console.log('✅ 检测到交互元素，页面渲染完整')
+      } catch (e) {
+        // 如果没有交互元素，检查 body 是否有足够内容
+        const bodyContent = await page.evaluate(() => {
+          // @ts-ignore
+          return document.body.innerHTML.length
+        })
+        if (bodyContent > 100) {
+          console.log('✅ 页面内容已加载（无交互元素，但有内容）')
+        } else {
+          console.warn('⚠️ 页面内容可能为空')
+        }
+      }
+      
+      // 5. 额外等待确保所有异步操作完成（useEffect、API 调用等）
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      console.log('✅ 等待异步操作完成')
+    } catch (e) {
+      console.warn(`⚠️ 等待渲染过程出错: ${e instanceof Error ? e.message : String(e)}`)
+      // 即使出错也等待一下再截图
+      await new Promise(resolve => setTimeout(resolve, 2000))
+    }
     
     // 创建截图目录
     const screenshotsDir = path.join(__dirname, '../../screenshots')
@@ -200,11 +271,42 @@ async function captureScreenshot(urlOrCode: string | Record<string, string>): Pr
     const timestamp = Date.now()
     const screenshotPath = path.join(screenshotsDir, `preview-${timestamp}.png`)
     
+    // 截图前，保存页面内容用于调试
+    const pageContent = await page.evaluate(() => {
+      // @ts-ignore - document is available in browser context
+      const root = document.getElementById('root')
+      // @ts-ignore - document is available in browser context
+      return {
+        rootHTML: root ? root.innerHTML : 'root not found',
+        // @ts-ignore - document is available in browser context
+        bodyHTML: document.body.innerHTML.substring(0, 2000), // 限制长度
+        // @ts-ignore - document is available in browser context
+        buttonCount: document.querySelectorAll('button').length,
+        // @ts-ignore - document is available in browser context
+        inputCount: document.querySelectorAll('input').length,
+        // @ts-ignore - document is available in browser context
+        allText: document.body.innerText.substring(0, 1000),
+      }
+    })
+    
+    // 保存调试信息到文件
+    const debugInfoPath = screenshotPath.replace('.png', '-debug.json')
+    await writeFile(debugInfoPath, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      url,
+      pageContent,
+    }, null, 2), 'utf-8')
+    console.log(`📄 调试信息已保存: ${debugInfoPath}`)
+    
     // 截图
     await page.screenshot({
       path: screenshotPath,
       fullPage: true,
     })
+    
+    console.log(`📸 截图已保存: ${screenshotPath}`)
+    console.log(`📊 页面统计: ${pageContent.buttonCount} 个按钮, ${pageContent.inputCount} 个输入框`)
+    console.log(`📝 页面文本预览: ${pageContent.allText.substring(0, 200)}...`)
     
     return screenshotPath
   } finally {
@@ -330,6 +432,10 @@ export async function verifyPreview(options: VerifyOptions): Promise<VerifyResul
   try {
     // 1. 截图
     console.log('📸 Capturing screenshot...')
+    console.log(`📋 验证信息: ${previewUrl ? '使用沙盒 URL' : '使用代码预览'}`)
+    if (code) {
+      console.log(`📁 代码文件: ${Object.keys(code).join(', ')}`)
+    }
     // 如果有预览 URL，使用 URL；否则使用代码生成预览
     const screenshotSource = previewUrl || code
     if (!screenshotSource) {

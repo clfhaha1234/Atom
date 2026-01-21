@@ -21,7 +21,11 @@ interface FixErrorRequest {
  * POST /api/chat/fix-error
  */
 router.post('/fix-error', async (req, res) => {
-  const { errorId, errorInfo, codeContext, projectId } = req.body as FixErrorRequest
+  const { errorId, errorInfo, codeContext, projectId, userId } = req.body as FixErrorRequest & { userId?: string }
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' })
+  }
 
   try {
     // 构建修复提示词
@@ -51,7 +55,7 @@ ${Object.entries(codeContext).map(([file, code]) => `\n${file}:\n${code}`).join(
     const response = await mike.invoke({
       userMessage: fixPrompt,
       projectId: projectId || 'fix-error',
-      userId: 'user-1', // TODO: 从认证中获取
+      userId: userId, // 从请求中获取
     })
 
     // 解析修复结果

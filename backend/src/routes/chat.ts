@@ -4,7 +4,11 @@ import { createMikeAgent } from '../agents/mike'
 const router = express.Router()
 
 router.post('/', async (req, res) => {
-  const { message, projectId } = req.body
+  const { message, projectId, userId } = req.body
+  
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' })
+  }
   
   try {
     // 调用 Mike Agent
@@ -12,7 +16,7 @@ router.post('/', async (req, res) => {
     const response = await mike.invoke({
       userMessage: message,
       projectId: projectId || 'default',
-      userId: 'user-1', // TODO: 从认证中获取
+      userId: userId, // 从请求中获取
     })
     
     res.json({

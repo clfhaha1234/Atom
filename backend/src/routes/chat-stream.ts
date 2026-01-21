@@ -5,7 +5,11 @@ const router = express.Router()
 
 // 流式响应端点
 router.post('/stream', async (req, res) => {
-  const { message, projectId, conversationHistory } = req.body
+  const { message, projectId, conversationHistory, userId } = req.body
+  
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' })
+  }
   
   // 设置 SSE 响应头
   res.setHeader('Content-Type', 'text/event-stream')
@@ -21,7 +25,7 @@ router.post('/stream', async (req, res) => {
     const state = {
       userMessage: message,
       projectId: projectId || 'default',
-      userId: 'user-1', // TODO: 从认证中获取
+      userId: userId, // 从请求中获取
       conversationHistory: conversationHistory || [], // 传递对话历史
     }
     

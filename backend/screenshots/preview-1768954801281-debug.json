@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-01-21T00:20:01.283Z",
+  "url": "file:///Users/lifeichen/Atom/backend/temp/preview-1768954776983.html",
+  "pageContent": {
+    "rootHTML": "",
+    "bodyHTML": "\n  <div id=\"root\"></div>\n  <script type=\"text/babel\">\n    const { useState, useCallback, useEffect } = React;\n    function App() {\n  const [display, setDisplay] = useState('0');\n  const [previousValue, setPreviousValue] = useState(null);\n  const [operation, setOperation] = useState(null);\n  const [waitingForOperand, setWaitingForOperand] = useState(false);\n\n  const inputNumber = (num) => {\n    if (waitingForOperand) {\n      setDisplay(num);\n      setWaitingForOperand(false);\n    } else {\n      setDisplay(display === '0' ? num : display + num);\n    }\n  };\n\n  const inputDecimal = () => {\n    if (waitingForOperand) {\n      setDisplay('0.');\n      setWaitingForOperand(false);\n    } else if (display.indexOf('.') === -1) {\n      setDisplay(display + '.');\n    }\n  };\n\n  const clear = () => {\n    setDisplay('0');\n    setPreviousValue(null);\n    setOperation(null);\n    setWaitingForOperand(false);\n  };\n\n  const performOperation = (nextOperation) => {\n    const inputValue = parseFloat(display);\n\n    if (previousValue === null) {\n      setPreviousValue(inputValue);\n    } else if (operation) {\n      const currentValue = previousValue || 0;\n      const newValue = calculate(currentValue, inputValue, operation);\n\n      setDisplay(String(newValue));\n      setPreviousValue(newValue);\n    }\n\n    setWaitingForOperand(true);\n    setOperation(nextOperation);\n  };\n\n  const calculate = (firstValue, secondValue, operation) => {\n    switch (operation) {\n      case '+':\n        return firstValue + secondValue;\n      case '-':\n        return firstValue - secondValue;\n      case '×':\n        return firstValue * secondValue;\n      case '÷':\n        return firstValue / secondValue;\n      default:\n        return secondValue;\n    }\n  };\n\n  const handleEquals = () => {\n    if (operation && previousValue !== null) {\n      performOperation('=');\n      setOperation(null);\n      setPreviousValue(null);\n      setWaitingForOperand(true);\n    }\n  };\n\n  return (\n    <div className=\"calculator\">\n      <div ",
+    "buttonCount": 0,
+    "inputCount": 0,
+    "allText": ""
+  }
+}

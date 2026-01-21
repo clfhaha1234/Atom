@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChatStore } from '../store/chatStore'
 import { useAuthStore } from '../store/authStore'
+import { useProjectStore } from '../store/projectStore'
+import { useMessageStore } from '../store/messageStore'
 import { ChatMessage } from '../components/ChatMessage'
 import { ChatInput } from '../components/ChatInput'
 import { CodebaseView } from '../components/CodebaseView'
@@ -11,10 +13,16 @@ type ViewMode = 'codebase' | 'preview'
 
 export function ChatPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const { messages, isTyping, addMessage } = useChatStore()
+  const { messages, isTyping, addMessage, clearMessages, setMessages } = useChatStore()
   const { user, signOut, checkAuth } = useAuthStore()
+  const { projects, currentProjectId, setCurrentProject, fetchProjects } = useProjectStore()
+  const { fetchMessages } = useMessageStore()
   const [viewMode, setViewMode] = useState<ViewMode>('preview')
+  const [messagesLoaded, setMessagesLoaded] = useState(false)
+  
+  const currentProject = projects.find(p => p.id === currentProjectId)
 
   // 获取最新的代码 artifact（优先显示最新的）
   const latestCodeArtifact = messages
@@ -24,12 +32,50 @@ export function ChatPage() {
     .find(a => a.type === 'code')
 
   useEffect(() => {
-    checkAuth().then(() => {
+    checkAuth().then(async () => {
       if (!user) {
         navigate('/login')
+        return
+      }
+      
+      // 加载项目列表（对话历史）
+      await fetchProjects(user.id)
+      
+      // 从 URL 参数获取项目 ID
+      const projectIdFromUrl = searchParams.get('projectId')
+      if (projectIdFromUrl) {
+        setCurrentProject(projectIdFromUrl)
+        
+        // 加载该项目的消息历史
+        if (!messagesLoaded) {
+          setMessagesLoaded(true)
+          const savedMessages = await fetchMessages(projectIdFromUrl, user.id)
+          if (savedMessages.length > 0) {
+            // 转换数据库格式到前端格式
+            const formattedMessages = savedMessages.map((msg: any) => ({
+              id: msg.id,
+              role: msg.role,
+              content: msg.content,
+              agent: msg.agent,
+              timestamp: new Date(msg.timestamp),
+              artifacts: msg.artifacts || [],
+            }))
+            setMessages(formattedMessages)
+          } else {
+            // 如果没有保存的消息，清空当前消息（可能是新项目）
+            clearMessages()
+          }
+        }
+      } else {
+        // 新对话，清空消息和项目
+        if (messages.length > 0 && !messages.some(msg => msg.id === 'welcome')) {
+          clearMessages()
+        }
+        setCurrentProject(null)
+        setMessagesLoaded(true)
       }
     })
-  }, [user, navigate, checkAuth])
+  }, [user, navigate, checkAuth, fetchProjects, searchParams, setCurrentProject, fetchMessages, messagesLoaded, messages.length, clearMessages, setMessages])
 
   // 使用 useRef 跟踪是否已添加欢迎消息，避免重复添加
   const welcomeAddedRef = useRef(false)
@@ -38,7 +84,8 @@ export function ChatPage() {
     // 检查是否已经存在欢迎消息，或者已经添加过
     const hasWelcome = messages.some(msg => msg.id === 'welcome')
     
-    if (messages.length === 0 && !hasWelcome && !welcomeAddedRef.current) {
+    // 如果有项目 ID，不显示欢迎消息（继续之前的对话）
+    if (messages.length === 0 && !hasWelcome && !welcomeAddedRef.current && !currentProjectId) {
       welcomeAddedRef.current = true
       // 添加欢迎消息
       addMessage({
@@ -49,7 +96,7 @@ export function ChatPage() {
         timestamp: new Date(),
       })
     }
-  }, [messages, addMessage])
+  }, [messages, addMessage, currentProjectId])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -74,12 +121,24 @@ export function ChatPage() {
             <h1 className="text-xl font-bold bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">
               Atoms
             </h1>
-            <span className="text-sm text-gray-500">新项目</span>
-            {latestCodeArtifact && (
-              <span className="text-sm text-green-600">✓ 代码已生成</span>
+            {currentProject ? (
+              <>
+                <span className="text-sm text-gray-700 font-medium">{currentProject.name}</span>
+                {latestCodeArtifact && (
+                  <span className="text-sm text-green-600">✓ 代码已生成</span>
+                )}
+              </>
+            ) : (
+              <span className="text-sm text-gray-500">新对话</span>
             )}
           </div>
           <div className="flex items-center gap-4">
+            <button
+              onClick={() => navigate('/projects')}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900"
+            >
+              对话历史
+            </button>
             {latestCodeArtifact?.sandboxInfo?.websiteUrl && (
               <a
                 href={latestCodeArtifact.sandboxInfo.websiteUrl}

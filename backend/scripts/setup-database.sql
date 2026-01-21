@@ -19,15 +19,15 @@ CREATE TABLE IF NOT EXISTS project_states (
   UNIQUE(project_id, user_id)
 );
 
--- 对话消息表（存储每次对话的消息历史）
+-- 对话消息表
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
-  role TEXT NOT NULL, -- 'user' or 'assistant'
+  role TEXT NOT NULL,
   content TEXT NOT NULL,
-  agent TEXT, -- 'mike', 'emma', 'bob', 'alex' (仅 assistant 消息)
-  artifacts JSONB, -- 存储 artifacts（代码、PRD等）
+  agent TEXT,
+  artifacts JSONB,
   timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -43,7 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_project_timestamp ON messages(project_id, timestamp DESC);
 
--- 自动更新 updated_at
+-- 自动更新 updated_at 的函数
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -52,11 +52,14 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+-- 触发器
+DROP TRIGGER IF EXISTS update_projects_updated_at ON projects;
 CREATE TRIGGER update_projects_updated_at
   BEFORE UPDATE ON projects
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_project_states_updated_at ON project_states;
 CREATE TRIGGER update_project_states_updated_at
   BEFORE UPDATE ON project_states
   FOR EACH ROW

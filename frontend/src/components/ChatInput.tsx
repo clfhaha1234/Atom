@@ -1,11 +1,19 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useChatStore } from '../store/chatStore'
+import { useProjectStore } from '../store/projectStore'
+import { useAuthStore } from '../store/authStore'
+import { useMessageStore } from '../store/messageStore'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
 
 export function ChatInput() {
   const [input, setInput] = useState('')
+  const navigate = useNavigate()
   const { addMessage, setTyping } = useChatStore()
+  const { currentProjectId, setCurrentProject, createProject } = useProjectStore()
+  const { user } = useAuthStore()
+  const { saveMessage } = useMessageStore()
   
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -22,6 +30,33 @@ export function ChatInput() {
     const messageContent = input
     setInput('')
     setTyping(true)
+    
+    // 如果没有当前项目，自动创建新项目（从第一条消息生成项目名）
+    let projectId = currentProjectId
+    if (!projectId && user) {
+      // 从消息生成项目名称（取前30个字符）
+      const projectName = messageContent.length > 30 
+        ? messageContent.substring(0, 30) + '...'
+        : messageContent
+      try {
+        const newProject = await createProject(user.id, projectName)
+        projectId = newProject.id
+        setCurrentProject(projectId)
+        // 立即更新 URL，包含 projectId
+        navigate(`/chat?projectId=${projectId}`, { replace: true })
+      } catch (error) {
+        console.error('Failed to create project:', error)
+        // 如果创建失败，使用默认项目 ID
+        projectId = 'default'
+      }
+    }
+    
+    // 保存用户消息到数据库
+    if (projectId && user) {
+      saveMessage(projectId, user.id, userMessage).catch(err => 
+        console.error('Failed to save message:', err)
+      )
+    }
     
     try {
       // 获取对话历史（最近 10 条消息）
@@ -42,7 +77,8 @@ export function ChatInput() {
         },
         body: JSON.stringify({ 
           message: messageContent,
-          projectId: 'default', // TODO: 从项目上下文获取
+          projectId: projectId || 'default',
+          userId: user?.id, // 传递用户 ID
           conversationHistory,
         }),
       })
@@ -105,38 +141,62 @@ export function ChatInput() {
               } else if (data.type === 'agent_complete') {
                 // Agent 完成工作，更新消息
                 const { updateMessage } = useChatStore.getState()
+                let finalMessage
                 if (currentMessageId) {
                   updateMessage(currentMessageId, {
                     content: data.content,
                     artifacts: data.artifacts || [],
                   })
+                  // 获取更新后的消息用于保存
+                  const { messages } = useChatStore.getState()
+                  finalMessage = messages.find(m => m.id === currentMessageId)
                 } else {
-                  addMessage({
+                  finalMessage = {
                     id: Date.now().toString(),
-                    role: 'assistant',
+                    role: 'assistant' as const,
                     agent: data.agent,
                     content: data.content,
                     timestamp: new Date(),
                     artifacts: data.artifacts,
-                  })
+                  }
+                  addMessage(finalMessage)
+                }
+                // 保存消息到数据库（确保每次 AI 回复都保存）
+                const currentProjectId = useProjectStore.getState().currentProjectId
+                if (currentProjectId && user && finalMessage) {
+                  saveMessage(currentProjectId, user.id, finalMessage).catch(err => 
+                    console.error('Failed to save agent_complete message:', err)
+                  )
                 }
               } else if (data.type === 'complete') {
                 // 全部完成
                 const { updateMessage } = useChatStore.getState()
+                let finalMessage
                 if (currentMessageId) {
                   updateMessage(currentMessageId, {
                     content: data.content,
                     artifacts: data.artifacts || [],
                   })
+                  // 获取更新后的消息用于保存
+                  const { messages } = useChatStore.getState()
+                  finalMessage = messages.find(m => m.id === currentMessageId)
                 } else {
-                  addMessage({
+                  finalMessage = {
                     id: Date.now().toString(),
-                    role: 'assistant',
+                    role: 'assistant' as const,
                     agent: data.agent,
                     content: data.content,
                     timestamp: new Date(),
                     artifacts: data.artifacts,
-                  })
+                  }
+                  addMessage(finalMessage)
+                }
+                // 保存消息到数据库（确保每次 AI 回复都保存）
+                const currentProjectId = useProjectStore.getState().currentProjectId
+                if (currentProjectId && user && finalMessage) {
+                  saveMessage(currentProjectId, user.id, finalMessage).catch(err => 
+                    console.error('Failed to save complete message:', err)
+                  )
                 }
               } else if (data.type === 'error') {
                 // 显示具体错误信息

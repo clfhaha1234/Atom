@@ -463,9 +463,9 @@ async function* alexCodeGenNodeStream(state: ProjectState): AsyncGenerator<{ typ
     : ''
   
   const modificationContext = state.isModification && state.code
-    ? `\n\n⚠️ 注意：这是对现有项目的修改。之前的代码文件:\n${Object.entries(state.code).map(([file, content]) => 
-        `\n${file}:\n${content.substring(0, 500)}${content.length > 500 ? '...' : ''}`
-      ).join('\n')}\n\n请根据新的需求修改代码，保留仍然适用的部分。`
+    ? `\n\n⚠️ 注意：这是对现有项目的修改。之前的完整代码文件:\n${Object.entries(state.code).map(([file, content]) => 
+        `\n${file}:\n${content}`
+      ).join('\n---\n')}\n\n请根据新的需求修改代码，保留仍然适用的部分。必须返回完整的、可运行的代码文件。`
     : ''
   
   // 如果是修改场景，只输出需要修改的diff部分
@@ -625,9 +625,9 @@ ${state.userMessage.includes('⚠️ 修复要求') ? `\n\n修复要求: ${state
 async function alexCodeGenNode(state: ProjectState): Promise<ProjectState> {
   const isModification = state.isModification && state.code
   const modificationContext = state.isModification && state.code
-    ? `\n\n⚠️ 注意：这是对现有项目的修改。之前的代码文件:\n${Object.entries(state.code).map(([file, content]) => 
-        `\n${file}:\n${content.substring(0, 500)}${content.length > 500 ? '...' : ''}`
-      ).join('\n')}\n\n请根据新的需求修改代码，保留仍然适用的部分。`
+    ? `\n\n⚠️ 注意：这是对现有项目的修改。之前的完整代码文件:\n${Object.entries(state.code).map(([file, content]) => 
+        `\n${file}:\n${content}`
+      ).join('\n---\n')}\n\n请根据新的需求修改代码，保留仍然适用的部分。必须返回完整的、可运行的代码文件。`
     : ''
   
   const prompt = isModification
@@ -1029,11 +1029,52 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
       const codeStream = alexCodeGenNodeStream(state)
       
       let fullContent = ''
+      let detectedFiles: string[] = []
+      
       for await (const chunk of codeStream) {
         if ('type' in chunk && chunk.type === 'content_chunk') {
           fullContent += chunk.content
-          accumulatedContent += chunk.content
-          // 实时 yield 生成的内容
+          
+          // 检测 JSON 代码块中的文件名，只显示文件名而不是代码内容
+          try {
+            // 尝试从累积内容中提取文件名
+            const jsonMatch = fullContent.match(/\{[\s\S]*\}/)
+            if (jsonMatch) {
+              try {
+                const parsed = JSON.parse(jsonMatch[0])
+                const newFiles = Object.keys(parsed).filter(f => !detectedFiles.includes(f))
+                if (newFiles.length > 0) {
+                  detectedFiles.push(...newFiles)
+                  // 只显示文件名列表
+                  accumulatedContent = isFixing
+                    ? `🔧 **Alex (工程师)** 正在修复代码...\n\n正在处理文件:\n${detectedFiles.map(f => `  - ${f}`).join('\n')}\n`
+                    : `💻 **Alex (工程师)** 正在生成代码...\n\n正在生成文件:\n${detectedFiles.map(f => `  - ${f}`).join('\n')}\n`
+                }
+              } catch (e) {
+                // JSON 不完整，继续累积
+              }
+            } else {
+              // 如果还没有 JSON，检查是否有文件名提示（如 "App.tsx":）
+              const filePattern = /["']([^"']+\.(tsx?|jsx?|css|json|html))["']\s*:/g
+              const matches = [...fullContent.matchAll(filePattern)]
+              const newFiles = matches
+                .map(m => m[1])
+                .filter(f => !detectedFiles.includes(f))
+              if (newFiles.length > 0) {
+                detectedFiles.push(...newFiles)
+                accumulatedContent = isFixing
+                  ? `🔧 **Alex (工程师)** 正在修复代码...\n\n正在处理文件:\n${detectedFiles.map(f => `  - ${f}`).join('\n')}\n`
+                  : `💻 **Alex (工程师)** 正在生成代码...\n\n正在生成文件:\n${detectedFiles.map(f => `  - ${f}`).join('\n')}\n`
+              }
+            }
+          } catch (e) {
+            // 解析失败，继续使用原始内容（但限制长度）
+            if (accumulatedContent.length < 500) {
+              accumulatedContent += chunk.content
+            }
+          }
+          
+          // 实时 yield 生成的内容（只显示文件名）
           yield {
             type: 'content_update',
             agent: 'alex',
@@ -1211,16 +1252,22 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
             state.nextAgent = 'alex'
             // 保存原始用户消息（如果还没有保存）
             if (!state.originalUserMessage) {
-              state.originalUserMessage = state.userMessage
+              state.originalUserMessage = state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]
+            }
+            // 确保保留当前代码（修复时不应该丢失代码）
+            if (!state.code || Object.keys(state.code).length === 0) {
+              console.warn('⚠️ 修复时发现代码为空，这不应该发生')
             }
             // 将问题添加到用户消息中，触发修复（但保持原始需求清晰）
             const issuesText = verifyResult.issues.length > 0 
               ? verifyResult.issues.join('\n')
               : '预览页面存在问题，需要修复'
             // 使用原始需求 + 修复指令，而不是直接追加错误信息
-            const originalReq = state.originalUserMessage || state.userMessage.split('\n\n🔍')[0]
+            const originalReq = state.originalUserMessage
             state.userMessage = `${originalReq}\n\n⚠️ 修复要求：预览页面验证发现问题，请修复以下问题：\n${issuesText}\n\n请确保生成的代码是完整的、可运行的 React 组件，不要包含错误信息文本。`
             state.isModification = true // 标记为修改模式
+            // 确保代码被保留（修复时不应该丢失）
+            console.log(`🔧 开始修复，当前代码文件: ${state.code ? Object.keys(state.code).join(', ') : '无'}`)
             
             // 继续迭代修复（不 break，继续循环）
             continue
