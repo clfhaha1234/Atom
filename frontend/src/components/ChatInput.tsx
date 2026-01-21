@@ -5,7 +5,8 @@ import { useProjectStore } from '../store/projectStore'
 import { useAuthStore } from '../store/authStore'
 import { useMessageStore } from '../store/messageStore'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+// In production (same origin), use empty string for relative URLs
+const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3001')
 
 export function ChatInput() {
   const [input, setInput] = useState('')
@@ -33,7 +34,10 @@ export function ChatInput() {
     
     // 如果没有当前项目，自动创建新项目（从第一条消息生成项目名）
     let projectId = currentProjectId
+    console.log('[ChatInput] 发送消息:', { messageContent: messageContent.substring(0, 50), currentProjectId, projectId })
+    
     if (!projectId && user) {
+      console.log('[ChatInput] ⚠️ 没有 projectId，将创建新项目')
       // 从消息生成项目名称（取前30个字符）
       const projectName = messageContent.length > 30 
         ? messageContent.substring(0, 30) + '...'
@@ -79,7 +83,7 @@ export function ChatInput() {
           message: messageContent,
           projectId: projectId || 'default',
           userId: user?.id, // 传递用户 ID
-          conversationHistory,
+          conversationHistory: conversationHistory,
         }),
       })
       

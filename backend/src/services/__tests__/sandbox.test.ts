@@ -3,11 +3,13 @@
  * 测试 Daytona 沙盒的创建、文件操作、命令执行等功能
  */
 
-import { sandboxService } from '../sandbox'
 import * as dotenv from 'dotenv'
+import * as path from 'path'
 
-// 加载环境变量
-dotenv.config()
+// Load from root .env file
+dotenv.config({ path: path.resolve(__dirname, '../../../../.env') })
+
+import { sandboxService } from '../sandbox'
 
 describe('Sandbox Service Tests', () => {
   const testUserId = 'test-user-123'

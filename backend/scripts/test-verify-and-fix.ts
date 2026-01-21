@@ -9,7 +9,10 @@
  */
 
 import dotenv from 'dotenv'
-dotenv.config()
+import { resolve } from 'path'
+
+// Load from root .env file
+dotenv.config({ path: resolve(__dirname, '../../.env') })
 
 import { createMikeAgent } from '../src/agents/mike'
 import { verifyPreview, generatePreviewHTMLFromCode } from '../src/services/verify'

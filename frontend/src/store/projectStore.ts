@@ -27,7 +27,8 @@ interface ProjectStore {
   deleteProject: (projectId: string, userId: string) => Promise<void>
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+// In production (same origin), use empty string for relative URLs
+const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3001')
 
 export const useProjectStore = create<ProjectStore>((set, get) => ({
   projects: [],

@@ -4,14 +4,10 @@
 
 echo "🚀 启动 Atoms 项目..."
 
-# 检查环境变量
-if [ ! -f "frontend/.env" ]; then
-  echo "⚠️  请先配置 frontend/.env 文件"
-  exit 1
-fi
-
-if [ ! -f "backend/.env" ]; then
-  echo "⚠️  请先配置 backend/.env 文件"
+# 检查环境变量 - 统一使用根目录 .env 文件
+if [ ! -f ".env" ]; then
+  echo "⚠️  请先配置根目录 .env 文件"
+  echo "   参考 .env.example 创建 .env 文件"
   exit 1
 fi
 

@@ -43,7 +43,8 @@ export const useChatStore = create<ChatStore>((set) => ({
   clearMessages: () => set({ messages: [] }),
 
   fixError: async (errorId, errorInfo, codeContext) => {
-    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+    // In production (same origin), use empty string for relative URLs
+    const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3001')
     
     // 动态导入避免循环依赖
     const { useAuthStore } = await import('./authStore')

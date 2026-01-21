@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+// In production (same origin), use empty string for relative URLs
+const API_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:3001')
 
 interface MessageStore {
   fetchMessages: (projectId: string, userId: string) => Promise<any[]>

@@ -1,0 +1,51 @@
+# Render Blueprint
+# https://render.com/docs/blueprint-spec
+# All environment variables are now consolidated in a single configuration
+
+services:
+  - type: web
+    name: atom
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      # Server Configuration
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      
+      # Supabase Configuration (Required)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      
+      # Gemini AI Configuration (Required)
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_BASE_URL
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3-flash-preview
+      
+      # Frontend Build Variables (same values as backend)
+      # Note: VITE_ prefix vars are used during frontend build
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      
+      # Daytona Sandbox Configuration (Optional)
+      - key: DAYTONA_API_KEY
+        sync: false
+      - key: DAYTONA_SERVER_URL
+        sync: false
+      - key: DAYTONA_TARGET
+        sync: false
+      - key: DAYTONA_SANDBOX_IMAGE
+        sync: false

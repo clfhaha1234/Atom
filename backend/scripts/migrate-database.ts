@@ -6,9 +6,10 @@
 import { createClient } from '@supabase/supabase-js'
 import dotenv from 'dotenv'
 import { readFileSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 
-dotenv.config()
+// Load from root .env file
+dotenv.config({ path: resolve(__dirname, '../../.env') })
 
 const supabaseUrl = process.env.SUPABASE_URL
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY

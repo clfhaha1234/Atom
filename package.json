@@ -1,0 +1,20 @@
+{
+  "name": "atom",
+  "version": "1.0.0",
+  "description": "Atom - AI-powered development assistant",
+  "scripts": {
+    "install:all": "cd backend && npm install && cd ../frontend && npm install",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && npm run build",
+    "build": "npm run build:frontend && npm run build:backend",
+    "start": "cd backend && npm start",
+    "dev": "bash start.sh",
+    "postinstall": "npm run install:all"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

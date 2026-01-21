@@ -1,6 +1,12 @@
 import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+import path from 'path'
+
+// Load environment variables from root .env file
+const rootEnvPath = path.resolve(__dirname, '../../.env')
+dotenv.config({ path: rootEnvPath })
+
 import chatRoutes from './routes/chat'
 import chatStreamRoutes from './routes/chat-stream'
 import chatFixRoutes from './routes/chat-fix'
@@ -9,13 +15,18 @@ import projectsRoutes from './routes/projects'
 import messagesRoutes from './routes/messages'
 import { supabase } from './lib/supabase'
 
-dotenv.config()
-
 const app = express()
 const PORT = process.env.PORT || 3001
+const isProduction = process.env.NODE_ENV === 'production'
 
 app.use(cors())
 app.use(express.json())
+
+// Serve static frontend files in production
+if (isProduction) {
+  const frontendPath = path.join(__dirname, '../../frontend/dist')
+  app.use(express.static(frontendPath))
+}
 
 // Routes
 app.use('/api/chat', chatRoutes)
@@ -58,7 +69,16 @@ async function verifySupabaseConnection() {
   }
 }
 
+// SPA fallback - serve index.html for all non-API routes in production
+if (isProduction) {
+  const frontendPath = path.join(__dirname, '../../frontend/dist')
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(frontendPath, 'index.html'))
+  })
+}
+
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`)
+  console.log(`📍 Environment: ${isProduction ? 'production' : 'development'}`)
   await verifySupabaseConnection()
 })

@@ -1,12 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
-import * as dotenv from 'dotenv'
-import * as path from 'path'
 
-// 确保从正确的路径加载环境变量
-const envPath = path.resolve(__dirname, '../../.env')
-dotenv.config({ path: envPath })
-
-// 读取环境变量
+// Environment variables are loaded by index.ts from root .env file
 const supabaseUrl = process.env.SUPABASE_URL || ''
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 
@@ -19,7 +13,7 @@ const isConfigured = !!(supabaseUrl && supabaseKey)
 if (!isConfigured) {
   console.warn('⚠️  Supabase 配置不完整，某些功能可能无法使用')
   console.warn('   请检查环境变量: SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY')
-  console.warn(`   .env 路径: ${envPath}`)
+  console.warn('   .env 路径: 项目根目录/.env')
 } else {
   console.log('✅ Supabase 配置已加载')
 }
