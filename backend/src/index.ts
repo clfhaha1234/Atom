@@ -70,13 +70,11 @@ async function verifySupabaseConnection() {
 }
 
 // SPA fallback - serve index.html for all non-API routes in production
+// Note: Express v5 uses path-to-regexp@7 which is strict with wildcards.
+// We use a regex to match any path NOT starting with /api.
 if (isProduction) {
   const frontendPath = path.join(__dirname, '../../frontend/dist')
-  app.get('/*', (req, res, next) => {
-    // Skip API routes
-    if (req.path.startsWith('/api')) {
-      return next()
-    }
+  app.get(/^\/(?!api\/).*/, (req, res) => {
     res.sendFile(path.join(frontendPath, 'index.html'))
   })
 }
