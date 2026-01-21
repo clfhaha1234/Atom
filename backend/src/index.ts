@@ -72,7 +72,11 @@ async function verifySupabaseConnection() {
 // SPA fallback - serve index.html for all non-API routes in production
 if (isProduction) {
   const frontendPath = path.join(__dirname, '../../frontend/dist')
-  app.get('*', (req, res) => {
+  app.get('/*', (req, res, next) => {
+    // Skip API routes
+    if (req.path.startsWith('/api')) {
+      return next()
+    }
     res.sendFile(path.join(frontendPath, 'index.html'))
   })
 }
