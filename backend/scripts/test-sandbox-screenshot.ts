@@ -331,6 +331,9 @@ async function main() {
       }
     })
     
+    // 提升 evalResult 到外层作用域
+    let evalResult: { buttonCount: number; hasNumbers: boolean; buttonTexts: string[]; rootTextLength: number } | null = null
+    
     try {
         console.log('   ⏳ 正在加载页面...')
         await page.goto(urlToCheck, { 
@@ -367,7 +370,7 @@ async function main() {
         }
 
         // 检查具体内容
-        const evalResult = await page.evaluate(() => {
+        evalResult = await page.evaluate(() => {
             // @ts-ignore
             const buttons = Array.from(document.querySelectorAll('button'))
             // @ts-ignore
@@ -383,15 +386,17 @@ async function main() {
             }
         })
 
-        console.log('\n   📊 页面内容分析:')
-        console.log(`      - 按钮数量: ${evalResult.buttonCount} (预期 >= 10)`)
-        console.log(`      - 包含数字: ${evalResult.hasNumbers}`)
-        console.log(`      - 按钮样本: ${JSON.stringify(evalResult.buttonTexts)}`)
-        
-        if (evalResult.buttonCount < 10) {
-            console.warn('   ⚠️ 警告：按钮数量似乎不足，可能是渲染不完整')
-        } else {
-            console.log('   ✅ 确认：页面结构符合计算器特征')
+        if (evalResult) {
+          console.log('\n   📊 页面内容分析:')
+          console.log(`      - 按钮数量: ${evalResult.buttonCount} (预期 >= 10)`)
+          console.log(`      - 包含数字: ${evalResult.hasNumbers}`)
+          console.log(`      - 按钮样本: ${JSON.stringify(evalResult.buttonTexts)}`)
+          
+          if (evalResult.buttonCount < 10) {
+              console.warn('   ⚠️ 警告：按钮数量似乎不足，可能是渲染不完整')
+          } else {
+              console.log('   ✅ 确认：页面结构符合计算器特征')
+          }
         }
 
     } catch (e) {
@@ -401,7 +406,20 @@ async function main() {
     // 3. 验证结果
     console.log('\n🔍 步骤 3: 最终验证结果')
     console.log('='.repeat(60))
-    console.log(`   验证通过: ${verifyResult.passed ? '✅ 是' : '❌ 否'}`)
+    
+    // 如果 AI 分析失败但截图成功，说明基本功能正常
+    const buttonCount = evalResult?.buttonCount || 0
+    const aiFailed = verifyResult.issues?.some(issue => issue.includes('AI 分析失败')) || 
+                     verifyResult.issues?.some(issue => issue.includes('ANTHROPIC_API_KEY'))
+    const basicFunctionsWork = screenshotPath && fs.existsSync(screenshotPath) && buttonCount >= 10
+    
+    if (aiFailed && basicFunctionsWork) {
+      console.log(`   验证状态: ⚠️  AI 分析不可用，但基本功能正常`)
+      console.log(`   💡 提示: 设置 ANTHROPIC_API_KEY 环境变量以启用 AI 验证`)
+    } else {
+      console.log(`   验证通过: ${verifyResult.passed ? '✅ 是' : '❌ 否'}`)
+    }
+    
     if (verifyResult.issues?.length) {
       console.log(`\n   ⚠️  发现的问题:`)
       verifyResult.issues.forEach((issue, idx) => {
@@ -422,6 +440,9 @@ async function main() {
     // 最终总结
     if (verifyResult.passed) {
       console.log('\n🎉 测试成功！沙盒预览功能正常工作。')
+    } else if (aiFailed && basicFunctionsWork) {
+      console.log('\n✅ 测试基本通过！沙盒和截图功能正常工作。')
+      console.log('   ⚠️  AI 分析不可用，请设置 ANTHROPIC_API_KEY 环境变量以启用完整验证。')
     } else {
       console.log('\n⚠️  测试发现问题，但沙盒功能基本可用。')
     }

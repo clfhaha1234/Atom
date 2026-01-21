@@ -1,4 +1,4 @@
-import OpenAI from 'openai'
+import { GoogleGenAI } from '@google/genai'
 import { supabase } from '../lib/supabase'
 
 interface ProjectState {
@@ -22,22 +22,28 @@ interface AgentResponse {
 }
 
 // 延迟初始化 client
-let client: OpenAI | null = null
+let ai: any = null
 
 // Gemini API 配置
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
-const GEMINI_BASE_URL = process.env.GEMINI_BASE_URL
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
 
-function getClient() {
-  if (!client) {
-    client = new OpenAI({
+function getAI() {
+  if (!ai) {
+    ai = new GoogleGenAI({
       apiKey: GEMINI_API_KEY,
-      baseURL: GEMINI_BASE_URL,
     })
     console.log(`✅ 使用 Gemini 模型 (Official SDK): ${GEMINI_MODEL}`)
   }
-  return client
+  return ai
+}
+
+// 辅助函数：将 OpenAI 格式的 messages 转换为 Gemini 格式的 contents
+function messagesToContents(messages: any[]) {
+  return messages.map(msg => ({
+    role: msg.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: msg.content }]
+  }))
 }
 
 // 意图分析结果接口
@@ -67,20 +73,29 @@ ${hasCode ? `现有代码文件: ${Object.keys(state.code!).join(', ')}` : ''}
 
 字段说明：
 - intent: 
-  - "new_project": 用户想创建新项目（如"做一个计算器"、"开发博客系统"）
-  - "code_optimization": 用户想修改/修复/优化现有代码（如"改颜色"、"修复bug"、"添加功能"、"修复问题"）
-  - "chat": 闲聊或问答（如"你好"、"这个怎么用"）
-- needsCodeFix: 是否需要修改现有代码（只有当有现有代码且用户意图是修改时為 true）
-- reason: 简短说明判断理由`
+  - "new_project": 用户想创建新项目（如"做一个计算器"、"开发博客系统"、"帮我写一个xxx"）
+  - "code_optimization": 用户想修改/修复/优化现有代码。包括但不限于：
+    * 直接修改词：改颜色、修复bug、添加功能、删除xxx
+    * 风格调整：样式更卡通、更简洁、更现代、更好看
+    * 功能增强：加个按钮、增加xxx功能
+    * 任何针对现有项目的调整请求
+  - "chat": 纯粹的闲聊或问答（如"你好"、"这是什么"、"怎么用"）
+- needsCodeFix: 是否需要修改现有代码
+  * 如果 intent 是 code_optimization 且有现有代码，设为 true
+  * 否则设为 false
+- reason: 简短说明判断理由
+
+⚠️ 重要：如果用户消息是对现有项目的任何调整请求（无论多简单），都应该是 code_optimization，而不是 chat。
+例如"样式做的更卡通一些"、"颜色换成蓝色"、"字体大一点"都是 code_optimization。`
 
   try {
-    const response = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContent({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { responseMimeType: 'application/json' }
     })
     
-    const content = response.choices[0]?.message?.content || ''
+    const content = response.text || ''
     
     // 解析 JSON
     const jsonMatch = content.match(/\{[\s\S]*\}/)
@@ -115,33 +130,22 @@ ${hasCode ? `现有代码文件: ${Object.keys(state.code!).join(', ')}` : ''}
 
 // Mike 的决策节点
 async function supervisorNode(state: ProjectState): Promise<ProjectState> {
-  // 使用结构化 AI 分析意图
-  const intentAnalysis = await detectIntent(state)
-  state.intent = intentAnalysis.intent
+  // 注意：意图识别已经在 invokeStream 开头做过了，这里不再重复
+  // state.intent 和 state.isModification 已经设置好
   
-  console.log(`[Supervisor] 意图分析: intent=${intentAnalysis.intent}, needsCodeFix=${intentAnalysis.needsCodeFix}, reason=${intentAnalysis.reason}`)
+  console.log(`[Supervisor] 当前状态: intent=${state.intent}, isModification=${state.isModification}, hasCode=${!!state.code}`)
   
-  // 如果是闲聊/QA，直接让Mike回答
-  if (intentAnalysis.intent === 'chat') {
-    return {
-      ...state,
-      nextAgent: 'mike',
-      currentStatus: 'chatting',
-    }
-  }
-  
-  // 如果 AI 判断需要修复代码，直接让Alex处理
-  if (intentAnalysis.needsCodeFix && state.code) {
-    console.log('[Supervisor] AI 判断需要修复代码，路由到 Alex')
+  // 如果是代码修改请求且有现有代码，直接让 Alex 处理
+  if (state.isModification && state.code && Object.keys(state.code).length > 0) {
+    console.log('[Supervisor] 代码修改请求，直接路由到 Alex')
     return {
       ...state,
       nextAgent: 'alex',
       currentStatus: 'coding',
-      isModification: true,
     }
   }
   
-  // 如果是代码优化但没有现有代码，或是新项目，走完整流程
+  // 如果是新项目或代码优化但没有现有代码，走完整流程
   const historyContext = state.conversationHistory && state.conversationHistory.length > 0
     ? `\n\n对话历史:\n${state.conversationHistory.slice(-5).map(msg => 
         `${msg.role === 'user' ? '用户' : msg.agent || 'AI'}: ${msg.content}`
@@ -175,14 +179,16 @@ async function supervisorNode(state: ProjectState): Promise<ProjectState> {
 只返回 JSON，不要额外解释。`
 
   try {
-    const response = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContent({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      response_format: { type: 'json_object' },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { 
+        temperature: 0.3,
+        responseMimeType: 'application/json' 
+      }
     })
     
-    const content = response.choices[0]?.message?.content || ''
+    const content = response.text || ''
     let nextAgent: ProjectState['nextAgent'] = 'emma'
     
     try {
@@ -233,14 +239,13 @@ async function* mikeChatNodeStream(state: ProjectState): AsyncGenerator<{ type: 
 用 Markdown 格式输出。`
 
   try {
-    const stream = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContentStream({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
     })
     
-    for await (const chunk of stream) {
-      const chunkContent = chunk.choices[0]?.delta?.content || ''
+    for await (const chunk of response) {
+      const chunkContent = chunk.text || ''
       if (chunkContent) {
         yield {
           type: 'content_chunk',
@@ -298,15 +303,14 @@ async function* emmaPRDNodeStream(state: ProjectState): AsyncGenerator<{ type: s
 保持简洁，每个要点不超过一行。`
 
   try {
-    const stream = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContentStream({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
     })
     
     let fullContent = ''
-    for await (const chunk of stream) {
-      const chunkContent = chunk.choices[0]?.delta?.content || ''
+    for await (const chunk of response) {
+      const chunkContent = chunk.text || ''
       if (chunkContent) {
         fullContent += chunkContent
         yield {
@@ -333,7 +337,7 @@ async function* emmaPRDNodeStream(state: ProjectState): AsyncGenerator<{ type: s
 
 // Emma 的 PRD 生成节点（兼容版本）
 async function emmaPRDNode(state: ProjectState): Promise<ProjectState> {
-  const prompt = `作为产品经理 Emma,为以下需求生成精简的 PRD:
+  const prompt = `作为产品经理 Emma,为以下需求生成精简 of PRD:
 
 用户需求: ${state.userMessage}
 
@@ -357,12 +361,12 @@ async function emmaPRDNode(state: ProjectState): Promise<ProjectState> {
 保持简洁，每个要点不超过一行。`
 
   try {
-    const response = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContent({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
     })
     
-    const content = response.choices[0]?.message?.content || ''
+    const content = response.text || ''
     return {
       ...state,
       prd: content,
@@ -412,15 +416,14 @@ PRD: ${state.prd || '暂无'}${historyContext}${modificationContext}
 保持简洁，不要冗长描述，每个要点不超过一行。`
 
   try {
-    const stream = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContentStream({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
     })
     
     let fullContent = ''
-    for await (const chunk of stream) {
-      const chunkContent = chunk.choices[0]?.delta?.content || ''
+    for await (const chunk of response) {
+      const chunkContent = chunk.text || ''
       if (chunkContent) {
         fullContent += chunkContent
         yield {
@@ -469,12 +472,12 @@ PRD: ${state.prd || '暂无'}
 保持简洁，不要冗长描述，每个要点不超过一行。`
 
   try {
-    const response = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContent({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
     })
     
-    const content = response.choices[0]?.message?.content || ''
+    const content = response.text || ''
     return {
       ...state,
       architecture: content,
@@ -509,15 +512,23 @@ async function* alexCodeGenNodeStream(state: ProjectState): AsyncGenerator<{ typ
     ? `作为工程师 Alex,根据以下需求修改现有代码。
 请以 JSON 格式返回结果，包含以下字段：
 1. explanation: 简洁的修改说明（1-2句话）
-2. diff: 只包含修改部分的 diff 格式代码
-3. files: 包含修改后的所有完整文件内容的对象（Record<string, string>）
+2. files: **只包含需要修改的文件**（Record<string, string>），未修改的文件不要返回
 
-原始需求: ${state.originalUserMessage || state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]}
+⚠️ 重要规则：
+- 只返回需要修改的文件，不要返回未修改的文件
+- 例如：如果只需要改样式，只返回 index.css；如果只需要改组件，只返回 App.tsx
+- 返回的文件内容必须是完整的（不是 diff 格式）
+- ⚠️ 禁止创建 src/ 目录、components/ 目录或任何子目录
+- ⚠️ 禁止创建 main.tsx、tsconfig.json 等额外文件
+- 只能修改这 4 个文件：index.html、App.tsx、index.css、package.json
+- 所有 React 组件都必须写在 App.tsx 一个文件里
+
+修改需求: ${state.originalUserMessage || state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]}
 ${state.userMessage.includes('⚠️ 修复要求') ? `修复要求: ${state.userMessage.split('⚠️ 修复要求：')[1]?.split('\n\n请确保')[0] || ''}` : ''}
 PRD: ${state.prd || '暂无'}
 架构: ${state.architecture || '暂无'}${historyContext}${modificationContext}
 
-⚠️ 重要：生成的代码必须是完整的、可运行的 React 组件。只返回 JSON，不要包含其他解释文本。`
+只返回 JSON，不要包含其他解释文本。`
     : `作为工程师 Alex,为以下项目生成代码。
 请以 JSON 格式返回结果，包含以下字段：
 1. explanation: 简洁的实现说明
@@ -567,16 +578,15 @@ ${state.userMessage.includes('⚠️ 修复要求') ? `\n\n修复要求: ${state
 ⚠️ 重要：请生成完整的、可运行的 React 代码。只返回 JSON，不要包含其他解释文本。`
 
   try {
-    const stream = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContentStream({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      response_format: { type: 'json_object' },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { responseMimeType: 'application/json' }
     })
     
     let fullContent = ''
-    for await (const chunk of stream) {
-      const chunkContent = chunk.choices[0]?.delta?.content || ''
+    for await (const chunk of response) {
+      const chunkContent = chunk.text || ''
       if (chunkContent) {
         fullContent += chunkContent
         yield {
@@ -610,7 +620,25 @@ ${state.userMessage.includes('⚠️ 修复要求') ? `\n\n修复要求: ${state
         })
         
         if (hasValidCode) {
-          code = actualCode
+          // 过滤掉不允许的文件（src/ 开头、main.tsx、tsconfig.json 等）
+          const allowedFiles = ['index.html', 'App.tsx', 'index.css', 'package.json']
+          const filteredCode: Record<string, string> = {}
+          for (const [file, content] of Object.entries(actualCode)) {
+            if (allowedFiles.includes(file) && typeof content === 'string') {
+              filteredCode[file] = content
+            } else {
+              console.log(`[Alex] ⚠️ 过滤掉不允许的文件: ${file}`)
+            }
+          }
+          
+          // 方案 B：合并代码 - 保留旧文件，用新文件覆盖修改的部分
+          if (isModification && state.code) {
+            code = { ...state.code, ...filteredCode }
+            const modifiedFiles = Object.keys(filteredCode)
+            console.log(`[Alex] 增量更新: 修改了 ${modifiedFiles.join(', ')}，保留了 ${Object.keys(state.code).filter(k => !modifiedFiles.includes(k)).join(', ') || '无'}`)
+          } else {
+            code = Object.keys(filteredCode).length > 0 ? filteredCode : actualCode
+          }
         } else {
           throw new Error('Parsed code contains error messages, not valid code')
         }
@@ -705,14 +733,20 @@ async function alexCodeGenNode(state: ProjectState): Promise<ProjectState> {
     ? `作为工程师 Alex,根据以下需求修改现有代码。
 请以 JSON 格式返回结果，包含以下字段：
 1. explanation: 简洁的修改说明（1-2句话）
-2. diff: 只包含修改部分的 diff 格式代码
-3. files: 包含修改后的所有完整文件内容的对象（Record<string, string>）
+2. files: **只包含需要修改的文件**（Record<string, string>）
+
+⚠️ 重要规则：
+- 只返回需要修改的文件，未修改的文件不要返回
+- ⚠️ 禁止创建 src/ 目录、components/ 目录或任何子目录
+- ⚠️ 禁止创建 main.tsx、tsconfig.json 等额外文件
+- 只能修改这 4 个文件：index.html、App.tsx、index.css、package.json
+- 所有 React 组件都必须写在 App.tsx 一个文件里
 
 用户需求: ${state.userMessage}
 PRD: ${state.prd || '暂无'}
 架构: ${state.architecture || '暂无'}${modificationContext}
 
-⚠️ 重要：生成的代码必须是完整的、可运行的 React 组件。只返回 JSON，不要包含其他解释文本。`
+只返回 JSON，不要包含其他解释文本。`
     : `作为工程师 Alex,为以下项目生成代码。
 请以 JSON 格式返回结果，包含以下字段：
 1. explanation: 简洁的实现说明
@@ -732,13 +766,13 @@ PRD: ${state.prd || '暂无'}
 只返回 JSON，不要包含其他解释文本。`
 
   try {
-    const response = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContent({
       model: GEMINI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { responseMimeType: 'application/json' }
     })
     
-    const content = response.choices[0]?.message?.content || ''
+    const content = response.text || ''
     let code: Record<string, string> = {}
     
     try {
@@ -857,10 +891,33 @@ function quickCheckModification(userMessage: string, previousState: Partial<Proj
     return false
   }
   
-  const modificationKeywords = ['修复', '修改', '改成', '改为', '调整', '更新', '改', '换', '修', 'fix', 'repair', 'change', 'modify', 'update', 'adjust', '添加', '删除', '优化']
+  // 扩展关键词列表，覆盖更多修改请求的表达方式
+  const modificationKeywords = [
+    // 明确的修改词
+    '修复', '修改', '改成', '改为', '调整', '更新', '改', '换', '修', 
+    'fix', 'repair', 'change', 'modify', 'update', 'adjust',
+    '添加', '删除', '优化', '增加', '移除', '去掉',
+    // 风格/样式相关的修改词
+    '样式', '风格', '颜色', '大小', '字体', '布局',
+    '做成', '做的', '变成', '变得', '弄成', '搞成',
+    // 程度词 + 形容词（如"更卡通"、"更简洁"）
+    '更大', '更小', '更亮', '更暗', '更简', '更复杂', '更卡通', '更现代', '更简洁',
+    // 通用修改意图词
+    '一些', '一点', '一下',
+  ]
   const lowerMessage = userMessage.toLowerCase()
   
-  return modificationKeywords.some(keyword => lowerMessage.includes(keyword))
+  // 检查是否包含修改关键词
+  if (modificationKeywords.some(keyword => lowerMessage.includes(keyword))) {
+    return true
+  }
+  
+  // 检查"更X"模式（如"更卡通"、"更好看"）
+  if (/更\w+/.test(userMessage)) {
+    return true
+  }
+  
+  return false
 }
 
 // 流式工作流实现
@@ -870,24 +927,95 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
   userId: string
   conversationHistory?: Array<{ role: 'user' | 'assistant', content: string, agent?: string }>
 }) {
+  console.log(`\n========== 新消息 ==========`)
+  console.log(`[invokeStream] 用户消息: "${userMessage}"`)
+  console.log(`[invokeStream] projectId: ${projectId}`)
+  
   const previousState = await loadProjectState(projectId)
-  const quickCheck = quickCheckModification(userMessage, previousState)
   
-  let initialStatus: ProjectState['currentStatus'] = previousState?.currentStatus || 'planning'
-  if (quickCheck && previousState?.code && Object.keys(previousState.code).length > 0) {
-    initialStatus = 'coding'
-    console.log('初步检测到修复/修改请求，设置状态为 coding')
-  }
+  console.log(`[invokeStream] 加载的状态:`, {
+    hasPRD: !!previousState?.prd,
+    hasArch: !!previousState?.architecture,
+    hasCode: previousState?.code ? Object.keys(previousState.code) : [],
+    currentStatus: previousState?.currentStatus,
+  })
   
+  // 构建初始状态用于意图识别
   let state: ProjectState = {
     userMessage,
-    currentStatus: initialStatus,
+    currentStatus: previousState?.currentStatus || 'planning',
     prd: previousState?.prd,
     architecture: previousState?.architecture,
     code: previousState?.code,
     conversationHistory: conversationHistory || [],
-    isModification: quickCheck,
+    isModification: false,
     originalUserMessage: userMessage,
+  }
+
+  // 🔍 第一步：意图识别（在显示任何消息之前）
+  console.log('[Intent] 开始意图识别...')
+  const intentAnalysis = await detectIntent(state)
+  state.intent = intentAnalysis.intent
+  
+  console.log(`[Intent] 识别结果: intent=${intentAnalysis.intent}, needsCodeFix=${intentAnalysis.needsCodeFix}, reason=${intentAnalysis.reason}`)
+  
+  // 💬 如果是闲聊，直接 QA 对话，不调用任何 agent
+  if (intentAnalysis.intent === 'chat') {
+    console.log('[Intent] 识别为闲聊，走 QA 对话流程')
+    
+    yield {
+      type: 'agent_start',
+      agent: 'mike',
+      content: '',
+    }
+    
+    let accumulatedContent = ''
+    const chatStream = mikeChatNodeStream(state)
+    
+    for await (const chunk of chatStream) {
+      if ('type' in chunk && chunk.type === 'content_chunk') {
+        accumulatedContent += chunk.content
+        yield {
+          type: 'content_update',
+          agent: 'mike',
+          content: accumulatedContent,
+        }
+      }
+    }
+    
+    yield {
+      type: 'agent_complete',
+      agent: 'mike',
+      content: accumulatedContent,
+    }
+    
+    yield {
+      type: 'complete',
+      agent: 'mike',
+      content: accumulatedContent,
+    }
+    
+    return // 闲聊结束，直接返回
+  }
+  
+  // 🛠️ 如果是需求（新项目或代码修改），走 agent 流程
+  console.log(`[Intent] 识别为需求: ${intentAnalysis.intent}`)
+  
+  // 设置修改标志
+  const hasExistingCode = state.code && Object.keys(state.code).length > 0
+  console.log(`[Intent] 现有代码: ${hasExistingCode ? Object.keys(state.code!).join(', ') : '无'}`)
+  
+  if (intentAnalysis.needsCodeFix && hasExistingCode) {
+    state.isModification = true
+    state.currentStatus = 'coding'
+    console.log('[Intent] ✅ 检测到代码修改请求，设置 isModification=true, currentStatus=coding')
+  } else if (intentAnalysis.intent === 'code_optimization' && hasExistingCode) {
+    // 即使 needsCodeFix 为 false，如果是 code_optimization 且有代码，也应该修改
+    state.isModification = true
+    state.currentStatus = 'coding'
+    console.log('[Intent] ✅ code_optimization 且有现有代码，设置 isModification=true')
+  } else {
+    console.log(`[Intent] 走新项目流程: needsCodeFix=${intentAnalysis.needsCodeFix}, hasExistingCode=${hasExistingCode}`)
   }
 
   const maxIterations = 10
@@ -1107,25 +1235,46 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
       if (fullContent) {
         try {
           const jsonMatch = fullContent.match(/\{[\s\S]*\}/)
-          let code: Record<string, string> = {}
+          let newCode: Record<string, string> = {}
           
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0])
-            code = parsed.files || parsed
+            const rawCode = parsed.files || parsed
+            
+            // 过滤掉不允许的文件（src/ 开头、main.tsx、tsconfig.json 等）
+            const allowedFiles = ['index.html', 'App.tsx', 'index.css', 'package.json']
+            for (const [file, content] of Object.entries(rawCode)) {
+              if (allowedFiles.includes(file) && typeof content === 'string') {
+                newCode[file] = content
+              } else {
+                console.log(`[Alex] ⚠️ 过滤掉不允许的文件: ${file}`)
+              }
+            }
           } else {
-            code = {
+            newCode = {
               'App.tsx': `import React from 'react';\n\nexport default function App() {\n  return (\n    <div>\n      <h1>${state.userMessage}</h1>\n    </div>\n  );\n}`,
               'index.css': 'body { margin: 0; padding: 20px; font-family: sans-serif; }',
               'package.json': JSON.stringify({ name: 'app', version: '1.0.0', dependencies: { react: '^18.0.0' } }, null, 2),
             }
           }
           
+          // 方案 B：合并代码 - 保留旧文件，用新文件覆盖修改的部分
+          let finalCode: Record<string, string>
+          if (isFixing && state.code && Object.keys(newCode).length > 0) {
+            finalCode = { ...state.code, ...newCode }
+            const modifiedFiles = Object.keys(newCode)
+            const preservedFiles = Object.keys(state.code).filter(k => !modifiedFiles.includes(k))
+            console.log(`[Alex] 增量更新: 修改了 ${modifiedFiles.join(', ')}，保留了 ${preservedFiles.join(', ') || '无'}`)
+          } else {
+            finalCode = Object.keys(newCode).length > 0 ? newCode : (state.code || {})
+          }
+          
           state = {
             ...state,
-            code,
+            code: finalCode,
             currentStatus: 'complete',
           }
-          console.log('Alex code generated, files:', Object.keys(code))
+          console.log('Alex code generated, files:', Object.keys(finalCode))
         } catch (error) {
           console.error('Failed to parse code from stream:', error)
           state = {

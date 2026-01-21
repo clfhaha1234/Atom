@@ -57,6 +57,7 @@ async function sendMessage(message: string): Promise<TestResult> {
       body: JSON.stringify({
         message,
         projectId: 'test-calculator',
+        userId: 'test-user',
         conversationHistory: [],
       }),
     })
@@ -77,9 +78,32 @@ async function sendMessage(message: string): Promise<TestResult> {
     let lastCompleteChunk: StreamChunk | null = null
 
     console.log('📥 接收流式响应...\n')
+    
+    const startTime = Date.now()
+    const maxWaitTime = 10 * 60 * 1000 // 最大等待时间：10分钟
+    let chunkCount = 0
 
     // 使用 Node.js stream 方式读取
-    for await (const chunk of stream) {
+    let hasReceivedData = false
+    try {
+      for await (const chunk of stream) {
+        hasReceivedData = true
+        chunkCount++
+      const elapsedTime = Date.now() - startTime
+      
+      // 超时检查
+      if (elapsedTime > maxWaitTime) {
+        console.warn(`\n⚠️ 超过最大等待时间 (${maxWaitTime / 1000 / 60} 分钟)，停止等待`)
+        result.errors.push(`超时：超过最大等待时间`)
+        break
+      }
+      
+      // 每50个块输出一次进度
+      if (chunkCount % 50 === 0) {
+        const minutes = Math.floor(elapsedTime / 60000)
+        const seconds = Math.floor((elapsedTime % 60000) / 1000)
+        console.log(`   ⏳ 处理中... (已处理 ${chunkCount} 个块, 耗时 ${minutes}m ${seconds}s)`)
+      }
       const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       
       buffer += decoder.decode(value, { stream: true })
@@ -153,6 +177,23 @@ async function sendMessage(message: string): Promise<TestResult> {
         }
       }
     }
+  } catch (streamError: any) {
+      // 处理流式响应错误
+      if (streamError.code === 'ERR_STREAM_PREMATURE_CLOSE' || streamError.message?.includes('Premature close')) {
+        if (hasReceivedData && result.code) {
+          console.warn('\n⚠️ 流式响应提前关闭，但已获取到代码')
+          console.warn('   这可能是因为后端连接关闭，但代码已生成')
+          // 如果已经获取到代码，继续测试
+        } else {
+          result.errors.push(`流式响应提前关闭: ${streamError.message || 'Unknown error'}`)
+          console.error(`\n❌ 流式响应错误: ${streamError.message || 'Unknown error'}`)
+          console.error('   💡 提示: 检查后端服务是否正常运行')
+        }
+      } else {
+        result.errors.push(`流式响应错误: ${streamError.message || 'Unknown error'}`)
+        console.error(`\n❌ 流式响应错误: ${streamError.message || 'Unknown error'}`)
+      }
+    }
 
     // 处理最后的完成消息
     if (lastCompleteChunk?.artifacts) {
@@ -201,9 +242,9 @@ function generatePreviewHTML(code: Record<string, string>): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Calculator Preview</title>
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script crossorigin src="https://cdn.staticfile.org/react/18.2.0/umd/react.development.js"></script>
+  <script crossorigin src="https://cdn.staticfile.org/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdn.staticfile.org/babel-standalone/7.23.5/babel.min.js"></script>
   <style>
     body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
     ${code['index.css'] || code['App.css'] || ''}
@@ -537,6 +578,7 @@ async function testPreview(url: string, expectedFeatures: string[], maxRetries: 
 async function main() {
   console.log('🧪 开始自动化测试：Web 版计算器\n')
   console.log('=' .repeat(60))
+  console.log('⚠️  注意：此测试需要较长时间（AI 调用），请耐心等待...\n')
   
   // 1. 发送消息并获取结果
   const result = await sendMessage(TEST_USER_MESSAGE)
@@ -544,11 +586,19 @@ async function main() {
   if (result.errors.length > 0) {
     console.error('\n❌ 测试失败，错误:')
     result.errors.forEach(err => console.error(`   - ${err}`))
+    console.log('\n💡 提示:')
+    console.log('   - 确保后端 API 运行在 http://localhost:3001')
+    console.log('   - 检查 API 端点是否正确: /api/chat/stream')
+    console.log('   - 确保环境变量 ANTHROPIC_API_KEY 已设置')
     process.exit(1)
   }
   
   if (!result.code) {
     console.error('\n❌ 测试失败：没有生成代码')
+    console.log('\n💡 提示:')
+    console.log('   - 检查后端日志，查看是否有错误')
+    console.log('   - 确保 AI 调用成功')
+    console.log('   - 等待时间可能不够，代码生成需要较长时间')
     process.exit(1)
   }
   

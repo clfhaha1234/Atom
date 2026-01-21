@@ -1,30 +1,112 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export default function App() {
+  const [display, setDisplay] = useState('0');
+  const [firstOperand, setFirstOperand] = useState<number | null>(null);
+  const [operator, setOperator] = useState<string | null>(null);
+  const [waitingForSecondOperand, setWaitingForSecondOperand] = useState(false);
+
+  const handleNumber = (num: string) => {
+    if (waitingForSecondOperand) {
+      setDisplay(num);
+      setWaitingForSecondOperand(false);
+    } else {
+      setDisplay(display === '0' ? num : display + num);
+    }
+  };
+
+  const handleDecimal = () => {
+    if (waitingForSecondOperand) {
+      setDisplay('0.');
+      setWaitingForSecondOperand(false);
+      return;
+    }
+    if (!display.includes('.')) {
+      setDisplay(display + '.');
+    }
+  };
+
+  const calculate = (first: number, second: number, op: string): number => {
+    switch (op) {
+      case '+': return first + second;
+      case '-': return first - second;
+      case '×': return first * second;
+      case '÷': return first / second;
+      default: return second;
+    }
+  };
+
+  const handleOperator = (nextOperator: string) => {
+    const inputValue = parseFloat(display);
+
+    if (firstOperand === null) {
+      setFirstOperand(inputValue);
+    } else if (operator) {
+      const result = calculate(firstOperand, inputValue, operator);
+      setDisplay(String(result));
+      setFirstOperand(result);
+    }
+
+    setWaitingForSecondOperand(true);
+    setOperator(nextOperator);
+  };
+
+  const handleEqual = () => {
+    if (operator === null || firstOperand === null) return;
+    const result = calculate(firstOperand, parseFloat(display), operator);
+    setDisplay(String(result));
+    setFirstOperand(null);
+    setOperator(null);
+    setWaitingForSecondOperand(false);
+  };
+
+  const handleClear = () => {
+    setDisplay('0');
+    setFirstOperand(null);
+    setOperator(null);
+    setWaitingForSecondOperand(false);
+  };
+
   return (
-    <div>
-      <h1>做一个计算器，包含数字按钮、四则运算符（+、-、×、÷）、等号按钮、清除按钮和小数点按钮
-
-⚠️ 修复要求：预览页面验证发现问题，请修复以下问题：
-缺少四则运算符按钮（+、-、×、÷）
-缺少等号按钮（=）
-缺少小数点按钮（.）
-功能完整性严重不足，只有数字按钮0-9和清除按钮C
-UI设计过于简陋，缺乏视觉层次和美观性
-按钮布局不合理，底部行只有两个按钮，空间利用不充分
-显示屏区域过大，按钮相对较小，比例不协调
-
-请确保生成的代码是完整的、可运行的 React 组件，不要包含错误信息文本。
-
-⚠️ 修复要求：预览页面验证发现问题，请修复以下问题：
-功能完整性严重不足：完全缺少计算器的核心功能
-缺少所有必需的按钮：数字按钮(0-9)、四则运算符(+、-、×、÷)、等号按钮(=)、小数点按钮(.)、清除按钮(C)
-没有显示屏区域来显示计算结果和输入内容
-界面显示为纯色渐变背景，完全没有计算器界面元素
-没有任何可交互的UI组件
-完全不符合用户需求的计算器应用要求
-
-请确保生成的代码是完整的、可运行的 React 组件，不要包含错误信息文本。</h1>
+    <div style={{ padding: '20px', fontFamily: 'Arial', maxWidth: '320px', margin: '0 auto' }}>
+      <h1>Calculator</h1>
+      <div style={{ 
+        border: '1px solid #ccc', 
+        padding: '10px', 
+        marginBottom: '10px',
+        fontSize: '24px',
+        textAlign: 'right',
+        minHeight: '40px',
+        backgroundColor: '#fff'
+      }}>
+        {display}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+        <button onClick={() => handleNumber('7')}>7</button>
+        <button onClick={() => handleNumber('8')}>8</button>
+        <button onClick={() => handleNumber('9')}>9</button>
+        <button onClick={() => handleOperator('÷')} style={{ backgroundColor: '#f9a825' }}>÷</button>
+        
+        <button onClick={() => handleNumber('4')}>4</button>
+        <button onClick={() => handleNumber('5')}>5</button>
+        <button onClick={() => handleNumber('6')}>6</button>
+        <button onClick={() => handleOperator('×')} style={{ backgroundColor: '#f9a825' }}>×</button>
+        
+        <button onClick={() => handleNumber('1')}>1</button>
+        <button onClick={() => handleNumber('2')}>2</button>
+        <button onClick={() => handleNumber('3')}>3</button>
+        <button onClick={() => handleOperator('-')} style={{ backgroundColor: '#f9a825' }}>-</button>
+        
+        <button onClick={() => handleNumber('0')}>0</button>
+        <button onClick={handleDecimal}>.</button>
+        <button onClick={handleClear}>C</button>
+        <button onClick={() => handleOperator('+')} style={{ backgroundColor: '#f9a825' }}>+</button>
+        
+        <button 
+          onClick={handleEqual} 
+          style={{ gridColumn: 'span 4', backgroundColor: '#4CAF50', color: 'white' }}
+        >=</button>
+      </div>
     </div>
   );
 }

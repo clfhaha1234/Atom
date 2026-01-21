@@ -7,7 +7,7 @@
  * 2. 如果只有代码，直接使用 AI 分析代码
  */
 
-import OpenAI from 'openai'
+import { GoogleGenAI } from '@google/genai'
 
 interface VerifyResult {
   passed: boolean
@@ -27,20 +27,18 @@ interface VerifyOptions {
 
 // Gemini API 配置
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
-const GEMINI_BASE_URL = process.env.GEMINI_BASE_URL
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
 
 // 延迟初始化 client
-let client: OpenAI | null = null
+let ai: any = null
 
-function getClient() {
-  if (!client) {
-    client = new OpenAI({
+function getAI() {
+  if (!ai) {
+    ai = new GoogleGenAI({
       apiKey: GEMINI_API_KEY,
-      baseURL: GEMINI_BASE_URL,
     })
   }
-  return client
+  return ai
 }
 
 /**
@@ -214,21 +212,18 @@ ${codeFiles}
 只返回 JSON，不要其他解释。`
 
   try {
-    const response = await getClient().chat.completions.create({
+    const response = await getAI().models.generateContent({
       model: GEMINI_MODEL,
-      max_tokens: 4096,
-      temperature: 0.3,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      response_format: { type: 'json_object' }, // Gemini 支持 JSON 模式
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { 
+        maxOutputTokens: 4096,
+        temperature: 0.3,
+        responseMimeType: 'application/json'
+      }
     })
     
-    // OpenAI SDK 返回格式
-    const content = response.choices[0]?.message?.content || ''
+    // Gemini SDK 返回格式
+    const content = response.text || ''
     
     // 尝试解析 JSON
     const jsonMatch = content.match(/\{[\s\S]*\}/)

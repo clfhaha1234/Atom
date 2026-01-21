@@ -15,9 +15,9 @@ const generatePreviewHTML = (mainCode: string, allFiles: Record<string, string>)
 <head>
   <meta charset="UTF-8">
   <title>Preview</title>
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script crossorigin src="https://cdn.staticfile.org/react/18.2.0/umd/react.development.js"></script>
+  <script crossorigin src="https://cdn.staticfile.org/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdn.staticfile.org/babel-standalone/7.23.5/babel.min.js"></script>
   <style>
     body { margin: 0; padding: 20px; font-family: sans-serif; }
     ${allFiles['index.css'] || ''}
