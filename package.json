@@ -9,7 +9,10 @@
     "build": "npm run build:frontend && npm run build:backend",
     "start": "cd backend && npm start",
     "dev": "bash start.sh",
-    "postinstall": "npm run install:all"
+    "postinstall": "npm run install:all",
+    "test:render": "bash scripts/test-render-build-only.sh",
+    "test:render:full": "bash scripts/test-render-build.sh",
+    "test:render:clean": "bash scripts/test-render-build.sh --clean"
   },
   "engines": {
     "node": ">=18.0.0"
