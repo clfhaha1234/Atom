@@ -9,7 +9,7 @@ interface MessageStore {
   saveMessages: (projectId: string, userId: string, messages: any[]) => Promise<void>
 }
 
-export const useMessageStore = create<MessageStore>((set, get) => ({
+export const useMessageStore = create<MessageStore>(() => ({
   fetchMessages: async (projectId: string, userId: string) => {
     try {
       const response = await fetch(`${API_URL}/api/messages/${projectId}?userId=${userId}`)
