@@ -1,4 +1,4 @@
-import { ChatAnthropic } from '@langchain/anthropic'
+import OpenAI from 'openai'
 import { supabase } from '../lib/supabase'
 
 interface ProjectState {
@@ -21,91 +21,108 @@ interface AgentResponse {
   artifacts?: any[]
 }
 
-// 延迟初始化 model，避免在测试时因为没有 API key 而失败
-let model: ChatAnthropic | null = null
+// 延迟初始化 client
+let client: OpenAI | null = null
 
-function getModel() {
-  if (!model) {
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) {
-      throw new Error('ANTHROPIC_API_KEY is required. For testing, use mock implementations.')
-    }
-    model = new ChatAnthropic({
-      modelName: 'claude-sonnet-4-20250514',
-      anthropicApiKey: apiKey,
-      temperature: 0.7,
+// Gemini API 配置
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY
+const GEMINI_BASE_URL = process.env.GEMINI_BASE_URL
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
+
+function getClient() {
+  if (!client) {
+    client = new OpenAI({
+      apiKey: GEMINI_API_KEY,
+      baseURL: GEMINI_BASE_URL,
     })
+    console.log(`✅ 使用 Gemini 模型 (Official SDK): ${GEMINI_MODEL}`)
   }
-  return model
+  return client
 }
 
-// 意图理解：判断用户意图
-async function detectIntent(state: ProjectState): Promise<'new_project' | 'code_optimization' | 'chat'> {
+// 意图分析结果接口
+interface IntentAnalysis {
+  intent: 'new_project' | 'code_optimization' | 'chat'
+  needsCodeFix: boolean  // 是否需要修复/修改现有代码
+  reason: string         // 判断理由
+}
+
+// 意图理解：使用结构化 JSON 返回判断用户意图
+async function detectIntent(state: ProjectState): Promise<IntentAnalysis> {
   const hasExistingProject = !!(state.prd || state.architecture || state.code)
+  const hasCode = !!(state.code && Object.keys(state.code).length > 0)
   
-  const prompt = `分析用户消息的意图，判断属于以下哪种类型：
+  const prompt = `分析用户消息的意图，返回结构化 JSON。
 
-1. "new_project" - 新项目需求（如"做一个计算器"、"开发一个博客系统"）
-2. "code_optimization" - 代码优化/修改需求（如"改个颜色"、"修复bug"、"优化性能"、"添加功能"）
-3. "chat" - 闲聊或QA（如"你好"、"谢谢"、"这个怎么用"、"解释一下"）
+用户消息: "${state.userMessage}"
+项目状态: ${hasExistingProject ? '已有项目（PRD/架构/代码已存在）' : '新项目（无现有代码）'}
+${hasCode ? `现有代码文件: ${Object.keys(state.code!).join(', ')}` : ''}
 
-用户消息: ${state.userMessage}
-${hasExistingProject ? '已有项目: ✅ (PRD/架构/代码已存在)' : '已有项目: ❌ (新项目)'}
+请分析并返回 JSON（只返回 JSON，不要其他内容）：
+{
+  "intent": "new_project" | "code_optimization" | "chat",
+  "needsCodeFix": true | false,
+  "reason": "判断理由"
+}
 
-只返回类型名称（new_project、code_optimization 或 chat），不要额外解释。`
+字段说明：
+- intent: 
+  - "new_project": 用户想创建新项目（如"做一个计算器"、"开发博客系统"）
+  - "code_optimization": 用户想修改/修复/优化现有代码（如"改颜色"、"修复bug"、"添加功能"、"修复问题"）
+  - "chat": 闲聊或问答（如"你好"、"这个怎么用"）
+- needsCodeFix: 是否需要修改现有代码（只有当有现有代码且用户意图是修改时為 true）
+- reason: 简短说明判断理由`
 
   try {
-    const response = await getModel().invoke(prompt)
-    const content = typeof response.content === 'string' 
-      ? response.content 
-      : JSON.stringify(response.content)
-    const intent = content.trim().toLowerCase() as any
+    const response = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+    })
     
-    if (intent === 'code_optimization' || intent === 'chat' || intent === 'new_project') {
-      return intent
+    const content = response.choices[0]?.message?.content || ''
+    
+    // 解析 JSON
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0])
+      const result: IntentAnalysis = {
+        intent: parsed.intent || 'chat',
+        needsCodeFix: Boolean(parsed.needsCodeFix) && hasCode,
+        reason: parsed.reason || '',
+      }
+      
+      // 验证 intent 值
+      if (!['new_project', 'code_optimization', 'chat'].includes(result.intent)) {
+        result.intent = 'chat'
+      }
+      
+      console.log(`[Intent] 分析结果: intent=${result.intent}, needsCodeFix=${result.needsCodeFix}, reason=${result.reason}`)
+      return result
     }
     
-    // 默认判断：如果有现有项目且消息包含修改关键词，则是优化
-    if (hasExistingProject && (
-      state.userMessage.includes('改') || 
-      state.userMessage.includes('修') || 
-      state.userMessage.includes('优化') ||
-      state.userMessage.includes('添加') ||
-      state.userMessage.includes('调整')
-    )) {
-      return 'code_optimization'
-    }
-    
-    // 如果是新项目关键词
-    if (state.userMessage.includes('做') || 
-        state.userMessage.includes('开发') || 
-        state.userMessage.includes('创建') ||
-        state.userMessage.includes('生成')) {
-      return 'new_project'
-    }
-    
-    // 默认是聊天
-    return 'chat'
+    throw new Error('Failed to parse intent JSON')
   } catch (error) {
     console.error('Intent detection error:', error)
-    // 默认判断
-    if (state.code && (state.userMessage.includes('改') || state.userMessage.includes('修'))) {
-      return 'code_optimization'
+    // 降级处理：返回默认值
+    return {
+      intent: hasExistingProject ? 'code_optimization' : 'new_project',
+      needsCodeFix: hasCode,
+      reason: '意图解析失败，使用默认值',
     }
-    return 'chat'
   }
 }
 
 // Mike 的决策节点
 async function supervisorNode(state: ProjectState): Promise<ProjectState> {
-  // 先进行意图理解
-  const intent = await detectIntent(state)
-  state.intent = intent
+  // 使用结构化 AI 分析意图
+  const intentAnalysis = await detectIntent(state)
+  state.intent = intentAnalysis.intent
   
-  console.log(`[Supervisor] Detected intent: ${intent}`)
+  console.log(`[Supervisor] 意图分析: intent=${intentAnalysis.intent}, needsCodeFix=${intentAnalysis.needsCodeFix}, reason=${intentAnalysis.reason}`)
   
   // 如果是闲聊/QA，直接让Mike回答
-  if (intent === 'chat') {
+  if (intentAnalysis.intent === 'chat') {
     return {
       ...state,
       nextAgent: 'mike',
@@ -113,9 +130,9 @@ async function supervisorNode(state: ProjectState): Promise<ProjectState> {
     }
   }
   
-  // 如果是代码优化，且已有代码，直接让Alex处理
-  if (intent === 'code_optimization' && state.code) {
-    console.log('[Supervisor] Code optimization detected, routing to Alex')
+  // 如果 AI 判断需要修复代码，直接让Alex处理
+  if (intentAnalysis.needsCodeFix && state.code) {
+    console.log('[Supervisor] AI 判断需要修复代码，路由到 Alex')
     return {
       ...state,
       nextAgent: 'alex',
@@ -124,7 +141,7 @@ async function supervisorNode(state: ProjectState): Promise<ProjectState> {
     }
   }
   
-  // 如果是新项目或需要完整流程
+  // 如果是代码优化但没有现有代码，或是新项目，走完整流程
   const historyContext = state.conversationHistory && state.conversationHistory.length > 0
     ? `\n\n对话历史:\n${state.conversationHistory.slice(-5).map(msg => 
         `${msg.role === 'user' ? '用户' : msg.agent || 'AI'}: ${msg.content}`
@@ -135,7 +152,10 @@ async function supervisorNode(state: ProjectState): Promise<ProjectState> {
     ? '\n\n⚠️ 注意：这是一个修改需求，请判断是否需要重新生成 PRD/架构，还是只需要修改代码。'
     : ''
   
-  const prompt = `你是 Atoms 团队的 Team Leader Mike。
+  const prompt = `你是 Atoms 团队的 Team Leader Mike。请分析当前状态并决定下一步行动。
+请以 JSON 格式返回结果，包含以下字段：
+1. nextAgent: "emma" | "bob" | "alex" | "complete"
+2. reason: 决策理由
 
 用户需求: ${state.userMessage}${historyContext}${modificationHint}
 
@@ -145,22 +165,36 @@ async function supervisorNode(state: ProjectState): Promise<ProjectState> {
 - 架构设计: ${state.architecture ? '✅' : '❌'}
 - 代码生成: ${state.code ? '✅' : '❌'}
 
-请决定下一步行动:
-1. 如果需要 PRD,返回 "emma"
-2. 如果需要架构设计,返回 "bob"
-3. 如果需要编码或修复代码,返回 "alex"
-4. 如果已完成,返回 "complete"
+决策逻辑:
+1. 如果没有 PRD, 返回 "emma"
+2. 如果有 PRD 但没有架构设计, 返回 "bob"
+3. 如果有架构设计但没有代码, 返回 "alex"
+4. 如果已完成所有工作且用户没有新要求, 返回 "complete"
+5. 如果是修改需求, 且 PRD/架构不需要重新生成, 可直接返回 "alex"
 
-${state.isModification ? '如果是小修改（如改颜色、文字），可能只需要 "alex"。如果是大改动，可能需要重新生成 PRD/架构。' : ''}
-
-只返回智能体名称,不要额外解释。`
+只返回 JSON，不要额外解释。`
 
   try {
-    const response = await getModel().invoke(prompt)
-    const content = typeof response.content === 'string' 
-      ? response.content 
-      : JSON.stringify(response.content)
-    const nextAgent = content.trim().toLowerCase() as any
+    const response = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+    })
+    
+    const content = response.choices[0]?.message?.content || ''
+    let nextAgent: ProjectState['nextAgent'] = 'emma'
+    
+    try {
+      const parsed = JSON.parse(content)
+      nextAgent = (parsed.nextAgent || parsed.agent || 'emma').toLowerCase() as any
+      console.log(`[Supervisor] 决策结果: nextAgent=${nextAgent}, reason=${parsed.reason || '无'}`)
+    } catch {
+      const match = content.match(/["']?nextAgent["']?\s*:\s*["']?(\w+)["']?/)
+      if (match) {
+        nextAgent = match[1].toLowerCase() as any
+      }
+    }
     
     return {
       ...state,
@@ -199,21 +233,19 @@ async function* mikeChatNodeStream(state: ProjectState): AsyncGenerator<{ type: 
 用 Markdown 格式输出。`
 
   try {
-    let fullContent = ''
-    
-    // 使用流式 API
-    const stream = await getModel().stream(prompt)
+    const stream = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+    })
     
     for await (const chunk of stream) {
-      const chunkContent = typeof chunk.content === 'string' 
-        ? chunk.content 
-        : JSON.stringify(chunk.content)
-      fullContent += chunkContent
-      
-      // 实时 yield 生成的内容
-      yield {
-        type: 'content_chunk',
-        content: chunkContent,
+      const chunkContent = chunk.choices[0]?.delta?.content || ''
+      if (chunkContent) {
+        yield {
+          type: 'content_chunk',
+          content: chunkContent,
+        }
       }
     }
     
@@ -266,21 +298,21 @@ async function* emmaPRDNodeStream(state: ProjectState): AsyncGenerator<{ type: s
 保持简洁，每个要点不超过一行。`
 
   try {
+    const stream = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+    })
+    
     let fullContent = ''
-    
-    // 使用流式 API
-    const stream = await getModel().stream(prompt)
-    
     for await (const chunk of stream) {
-      const chunkContent = typeof chunk.content === 'string' 
-        ? chunk.content 
-        : JSON.stringify(chunk.content)
-      fullContent += chunkContent
-      
-      // 实时 yield 生成的内容
-      yield {
-        type: 'content_chunk',
-        content: chunkContent,
+      const chunkContent = chunk.choices[0]?.delta?.content || ''
+      if (chunkContent) {
+        fullContent += chunkContent
+        yield {
+          type: 'content_chunk',
+          content: chunkContent,
+        }
       }
     }
     
@@ -325,10 +357,12 @@ async function emmaPRDNode(state: ProjectState): Promise<ProjectState> {
 保持简洁，每个要点不超过一行。`
 
   try {
-    const response = await getModel().invoke(prompt)
-    const content = typeof response.content === 'string' 
-      ? response.content 
-      : JSON.stringify(response.content)
+    const response = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+    })
+    
+    const content = response.choices[0]?.message?.content || ''
     return {
       ...state,
       prd: content,
@@ -356,7 +390,7 @@ async function* bobArchitectureNodeStream(state: ProjectState): AsyncGenerator<{
     ? `\n\n⚠️ 注意：这是对现有项目的修改。之前的架构:\n${state.architecture}\n\n请根据新的需求更新架构，保留仍然适用的部分。`
     : ''
   
-  const prompt = `作为架构师 Bob,为以下项目设计精简的技术架构:
+  const prompt = `作为架构师 Bob,为以下项目 design 精简的技术架构:
 
 用户需求: ${state.userMessage}
 PRD: ${state.prd || '暂无'}${historyContext}${modificationContext}
@@ -378,21 +412,21 @@ PRD: ${state.prd || '暂无'}${historyContext}${modificationContext}
 保持简洁，不要冗长描述，每个要点不超过一行。`
 
   try {
+    const stream = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+    })
+    
     let fullContent = ''
-    
-    // 使用流式 API
-    const stream = await getModel().stream(prompt)
-    
     for await (const chunk of stream) {
-      const chunkContent = typeof chunk.content === 'string' 
-        ? chunk.content 
-        : JSON.stringify(chunk.content)
-      fullContent += chunkContent
-      
-      // 实时 yield 生成的内容
-      yield {
-        type: 'content_chunk',
-        content: chunkContent,
+      const chunkContent = chunk.choices[0]?.delta?.content || ''
+      if (chunkContent) {
+        fullContent += chunkContent
+        yield {
+          type: 'content_chunk',
+          content: chunkContent,
+        }
       }
     }
     
@@ -435,10 +469,12 @@ PRD: ${state.prd || '暂无'}
 保持简洁，不要冗长描述，每个要点不超过一行。`
 
   try {
-    const response = await getModel().invoke(prompt)
-    const content = typeof response.content === 'string' 
-      ? response.content 
-      : JSON.stringify(response.content)
+    const response = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+    })
+    
+    const content = response.choices[0]?.message?.content || ''
     return {
       ...state,
       architecture: content,
@@ -468,118 +504,77 @@ async function* alexCodeGenNodeStream(state: ProjectState): AsyncGenerator<{ typ
       ).join('\n---\n')}\n\n请根据新的需求修改代码，保留仍然适用的部分。必须返回完整的、可运行的代码文件。`
     : ''
   
-  // 如果是修改场景，只输出需要修改的diff部分
-  const isModification = state.isModification && state.code
+  const isModification = !!(state.isModification && state.code)
   const prompt = isModification
-    ? `作为工程师 Alex,根据以下需求修改现有代码:
+    ? `作为工程师 Alex,根据以下需求修改现有代码。
+请以 JSON 格式返回结果，包含以下字段：
+1. explanation: 简洁的修改说明（1-2句话）
+2. diff: 只包含修改部分的 diff 格式代码
+3. files: 包含修改后的所有完整文件内容的对象（Record<string, string>）
 
 原始需求: ${state.originalUserMessage || state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]}
 ${state.userMessage.includes('⚠️ 修复要求') ? `修复要求: ${state.userMessage.split('⚠️ 修复要求：')[1]?.split('\n\n请确保')[0] || ''}` : ''}
 PRD: ${state.prd || '暂无'}
 架构: ${state.architecture || '暂无'}${historyContext}${modificationContext}
 
-⚠️ 重要：这是代码修改任务。请按以下步骤输出:
-
-⚠️ 关键要求：只生成代码，不要包含任何错误信息文本、验证反馈或问题描述。生成的代码必须是完整的、可运行的 React 组件。
-
-第一步：先输出修改说明（简洁，1-2句话说明修改内容）
-
-第二步：只输出需要修改的部分，使用 diff 格式:
-- 只列出需要修改的文件名
-- 对于每个文件，只输出修改的行，使用以下格式:
-  - 删除的行用 "- " 前缀
-  - 新增的行用 "+ " 前缀
-  - 未修改的行不要输出
-
-示例:
-修改说明: 将按钮颜色改为蓝色，添加点击事件
-
-\`\`\`diff
-文件: App.tsx
-- <button>Click</button>
-+ <button onClick={handleClick} style={{color: 'blue'}}>Click</button>
-\`\`\`
-
-第三步：最后用 JSON 格式返回修改后的完整文件内容（这一步在流式输出中会显示，但请保持简洁）:
-{
-  "App.tsx": "完整代码内容",
-  "index.css": "完整样式内容（如有修改）"
-}
-
-注意：在流式输出时，优先显示修改说明和diff部分，完整代码可以放在最后。`
-    : `作为工程师 Alex,为以下项目生成代码:
+⚠️ 重要：生成的代码必须是完整的、可运行的 React 组件。只返回 JSON，不要包含其他解释文本。`
+    : `作为工程师 Alex,为以下项目生成代码。
+请以 JSON 格式返回结果，包含以下字段：
+1. explanation: 简洁的实现说明
+2. files: 包含所有代码文件的对象（Record<string, string>），必须包含 App.tsx, index.css, package.json
 
 用户需求: ${state.originalUserMessage || state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]}
 PRD: ${state.prd || '暂无'}
 架构: ${state.architecture || '暂无'}${historyContext}
 ${state.userMessage.includes('⚠️ 修复要求') ? `\n\n修复要求: ${state.userMessage.split('⚠️ 修复要求：')[1]?.split('\n\n请确保')[0] || ''}` : ''}
 
-⚠️ 重要：请生成完整的、可运行的 React 代码，不要包含任何错误信息文本或验证反馈内容。
-
-请生成一个简单的 React 应用，包含:
-1. 主页面组件 (App.tsx)
-2. 样式文件 (index.css)
-3. package.json
-
-代码应该是可以直接运行的。用 JSON 格式返回，格式如下:
-{
-  "App.tsx": "代码内容",
-  "index.css": "样式内容",
-  "package.json": "package.json 内容"
-}
-
-注意：只返回代码，不要返回错误信息、验证反馈或其他文本内容。`
+⚠️ 重要：请生成完整的、可运行的 React 代码。只返回 JSON，不要包含其他解释文本。`
 
   try {
+    const stream = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+      response_format: { type: 'json_object' },
+    })
+    
     let fullContent = ''
-    
-    // 使用流式 API
-    const stream = await getModel().stream(prompt)
-    
     for await (const chunk of stream) {
-      const chunkContent = typeof chunk.content === 'string' 
-        ? chunk.content 
-        : JSON.stringify(chunk.content)
-      fullContent += chunkContent
-      
-      // 实时 yield 生成的内容
-      yield {
-        type: 'content_chunk',
-        content: chunkContent,
+      const chunkContent = chunk.choices[0]?.delta?.content || ''
+      if (chunkContent) {
+        fullContent += chunkContent
+        yield {
+          type: 'content_chunk',
+          content: chunkContent,
+        }
       }
     }
     
     // 解析代码
     let code: Record<string, string> = {}
     try {
-      // 尝试提取 JSON 代码块（可能包含在 markdown 代码块中）
       let jsonContent = fullContent
-      
-      // 移除可能的 markdown 代码块标记
       jsonContent = jsonContent.replace(/```json\s*/g, '').replace(/```\s*/g, '')
-      
-      // 移除可能的错误信息文本（如果 LLM 错误地包含了验证反馈）
       jsonContent = jsonContent.replace(/🔍\s*验证发现问题[^\n]*\n/g, '')
       jsonContent = jsonContent.replace(/⚠️\s*验证发现问题[^\n]*\n/g, '')
       jsonContent = jsonContent.replace(/请修复这些问题[^\n]*\n/g, '')
       
-      // 查找 JSON 对象
       const jsonMatch = jsonContent.match(/\{[\s\S]*\}/)
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0])
-        // 验证解析出的代码不包含错误信息
-        const codeKeys = Object.keys(parsed)
+        const actualCode = parsed.files || parsed // 优先使用 files 字段
+        const codeKeys = Object.keys(actualCode)
         const hasValidCode = codeKeys.some(key => {
-          const content = parsed[key]
+          const content = actualCode[key]
           return typeof content === 'string' && 
-                 content.length > 50 && 
+                 content.length > 20 && // 降低长度要求，因为有些文件可能很短
                  !content.includes('🔍 验证发现问题') &&
                  !content.includes('⚠️ 验证发现问题') &&
                  !content.includes('页面完全空白')
         })
         
         if (hasValidCode) {
-          code = parsed
+          code = actualCode
         } else {
           throw new Error('Parsed code contains error messages, not valid code')
         }
@@ -588,13 +583,9 @@ ${state.userMessage.includes('⚠️ 修复要求') ? `\n\n修复要求: ${state
       }
     } catch (error) {
       console.warn('Failed to parse code from LLM response, using fallback:', error)
-      // 如果解析失败，使用之前的代码（如果是修复）或生成默认代码
       if (state.code && Object.keys(state.code).length > 0) {
-        // 修复场景：保留之前的代码，但添加提示
         code = state.code
-        console.warn('Using previous code as fallback for repair')
       } else {
-        // 新项目：生成默认代码
         const originalReq = state.originalUserMessage || state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]
         code = {
           'App.tsx': `import React from 'react';\n\nexport default function App() {\n  return (\n    <div>\n      <h1>${originalReq}</h1>\n    </div>\n  );\n}`,
@@ -631,83 +622,53 @@ async function alexCodeGenNode(state: ProjectState): Promise<ProjectState> {
     : ''
   
   const prompt = isModification
-    ? `作为工程师 Alex,根据以下需求修改现有代码:
+    ? `作为工程师 Alex,根据以下需求修改现有代码。
+请以 JSON 格式返回结果，包含以下字段：
+1. explanation: 简洁的修改说明（1-2句话）
+2. diff: 只包含修改部分的 diff 格式代码
+3. files: 包含修改后的所有完整文件内容的对象（Record<string, string>）
 
 用户需求: ${state.userMessage}
 PRD: ${state.prd || '暂无'}
 架构: ${state.architecture || '暂无'}${modificationContext}
 
-⚠️ 重要：这是代码修改任务。请按以下步骤输出:
-
-第一步：先输出修改说明（简洁，1-2句话说明修改内容）
-
-第二步：只输出需要修改的部分，使用 diff 格式:
-- 只列出需要修改的文件名
-- 对于每个文件，只输出修改的行，使用以下格式:
-  - 删除的行用 "- " 前缀
-  - 新增的行用 "+ " 前缀
-  - 未修改的行不要输出
-
-示例:
-修改说明: 将按钮颜色改为蓝色，添加点击事件
-
-\`\`\`diff
-文件: App.tsx
-- <button>Click</button>
-+ <button onClick={handleClick} style={{color: 'blue'}}>Click</button>
-\`\`\`
-
-第三步：最后用 JSON 格式返回修改后的完整文件内容（这一步在流式输出中会显示，但请保持简洁）:
-{
-  "App.tsx": "完整代码内容",
-  "index.css": "完整样式内容（如有修改）"
-}
-
-注意：在流式输出时，优先显示修改说明和diff部分，完整代码可以放在最后。`
-    : `作为工程师 Alex,为以下项目生成代码:
+⚠️ 重要：生成的代码必须是完整的、可运行的 React 组件。只返回 JSON，不要包含其他解释文本。`
+    : `作为工程师 Alex,为以下项目生成代码。
+请以 JSON 格式返回结果，包含以下字段：
+1. explanation: 简洁的实现说明
+2. files: 包含所有代码文件的对象（Record<string, string>），必须包含 App.tsx, index.css, package.json
 
 用户需求: ${state.userMessage}
 PRD: ${state.prd || '暂无'}
 架构: ${state.architecture || '暂无'}
 
-请生成一个简单的 React 应用，包含:
-1. 主页面组件 (App.tsx)
-2. 样式文件 (index.css)
-3. package.json
-
-代码应该是可以直接运行的。用 JSON 格式返回，格式如下:
-{
-  "App.tsx": "代码内容",
-  "index.css": "样式内容",
-  "package.json": "package.json 内容"
-}`
+请生成一个简单的 React 应用。只返回 JSON，不要包含其他解释文本。`
 
   try {
-    const response = await getModel().invoke(prompt)
-    const content = typeof response.content === 'string' 
-      ? response.content 
-      : JSON.stringify(response.content)
+    const response = await getClient().chat.completions.create({
+      model: GEMINI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+    })
+    
+    const content = response.choices[0]?.message?.content || ''
     let code: Record<string, string> = {}
     
     try {
-      // 尝试解析 JSON
+      const parsed = JSON.parse(content)
+      code = parsed.files || parsed // 兼容旧格式或直接返回 files
+    } catch {
+      // 如果解析失败，尝试正则表达式提取
       const jsonMatch = content.match(/\{[\s\S]*\}/)
       if (jsonMatch) {
-        code = JSON.parse(jsonMatch[0])
+        const parsed = JSON.parse(jsonMatch[0])
+        code = parsed.files || parsed
       } else {
-        // 如果解析失败，创建默认代码
         code = {
           'App.tsx': `import React from 'react';\n\nexport default function App() {\n  return (\n    <div>\n      <h1>${state.userMessage}</h1>\n    </div>\n  );\n}`,
           'index.css': 'body { margin: 0; padding: 20px; font-family: sans-serif; }',
           'package.json': JSON.stringify({ name: 'app', version: '1.0.0', dependencies: { react: '^18.0.0' } }, null, 2),
         }
-      }
-    } catch {
-      // 如果解析失败，使用默认代码
-      code = {
-        'App.tsx': `import React from 'react';\n\nexport default function App() {\n  return (\n    <div>\n      <h1>${state.userMessage}</h1>\n    </div>\n  );\n}`,
-        'index.css': 'body { margin: 0; padding: 20px; font-family: sans-serif; }',
-        'package.json': JSON.stringify({ name: 'app', version: '1.0.0', dependencies: { react: '^18.0.0' } }, null, 2),
       }
     }
     
@@ -745,7 +706,6 @@ async function loadProjectState(projectId: string): Promise<Partial<ProjectState
       .maybeSingle()
     
     if (error) {
-      // 如果表不存在，返回 null（首次运行）
       if (error.code === 'PGRST116' || error.message?.includes('does not exist')) {
         console.warn('project_states table does not exist yet, please run database migration')
         return null
@@ -756,7 +716,6 @@ async function loadProjectState(projectId: string): Promise<Partial<ProjectState
     
     if (!data || !data.state) return null
     
-    // state 可能是 JSONB，直接返回或解析
     if (typeof data.state === 'string') {
       return JSON.parse(data.state)
     }
@@ -787,14 +746,13 @@ async function saveProjectState(projectId: string, userId: string, state: Projec
       .upsert({
         project_id: projectId,
         user_id: userId,
-        state: stateToSave, // Supabase JSONB 可以直接接受对象
+        state: stateToSave,
         updated_at: new Date().toISOString(),
       }, {
         onConflict: 'project_id,user_id'
       })
     
     if (error) {
-      // 如果表不存在，只记录警告（首次运行）
       if (error.code === 'PGRST116' || error.message?.includes('does not exist')) {
         console.warn('project_states table does not exist yet, please run database migration')
         return
@@ -806,14 +764,13 @@ async function saveProjectState(projectId: string, userId: string, state: Projec
   }
 }
 
-// 判断是否为修改需求
-function isModificationRequest(userMessage: string, previousState: Partial<ProjectState> | null): boolean {
+// 快速判断是否可能是修改需求
+function quickCheckModification(userMessage: string, previousState: Partial<ProjectState> | null): boolean {
   if (!previousState || (!previousState.prd && !previousState.code)) {
-    return false // 没有之前的状态，肯定是新需求
+    return false
   }
   
-  // 检查是否包含修改相关的关键词
-  const modificationKeywords = ['修改', '改成', '改为', '调整', '更新', '改', '换', 'change', 'modify', 'update', 'adjust']
+  const modificationKeywords = ['修复', '修改', '改成', '改为', '调整', '更新', '改', '换', '修', 'fix', 'repair', 'change', 'modify', 'update', 'adjust', '添加', '删除', '优化']
   const lowerMessage = userMessage.toLowerCase()
   
   return modificationKeywords.some(keyword => lowerMessage.includes(keyword))
@@ -826,25 +783,29 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
   userId: string
   conversationHistory?: Array<{ role: 'user' | 'assistant', content: string, agent?: string }>
 }) {
-  // 尝试加载之前的状态
   const previousState = await loadProjectState(projectId)
-  const isModification = isModificationRequest(userMessage, previousState)
+  const quickCheck = quickCheckModification(userMessage, previousState)
+  
+  let initialStatus: ProjectState['currentStatus'] = previousState?.currentStatus || 'planning'
+  if (quickCheck && previousState?.code && Object.keys(previousState.code).length > 0) {
+    initialStatus = 'coding'
+    console.log('初步检测到修复/修改请求，设置状态为 coding')
+  }
   
   let state: ProjectState = {
     userMessage,
-    currentStatus: previousState?.currentStatus || 'planning',
+    currentStatus: initialStatus,
     prd: previousState?.prd,
     architecture: previousState?.architecture,
     code: previousState?.code,
     conversationHistory: conversationHistory || [],
-    isModification,
-    originalUserMessage: userMessage, // 保存原始用户需求
+    isModification: quickCheck,
+    originalUserMessage: userMessage,
   }
 
   const maxIterations = 10
   let iterations = 0
 
-  // 发送开始消息
   yield {
     type: 'agent_start',
     agent: 'mike',
@@ -861,7 +822,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
       hasCode: !!state.code,
     })
 
-    // Supervisor 决定下一步
     state = await supervisorNode(state)
     
     console.log(`[Iteration ${iterations}] Supervisor decided:`, state.nextAgent)
@@ -876,7 +836,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
       break
     }
 
-    // 如果是Mike自己回答（闲聊/QA）
     if (state.nextAgent === 'mike') {
       yield {
         type: 'agent_start',
@@ -887,10 +846,8 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
       let accumulatedContent = `💬 **Mike (Team Leader)** 正在回答...\n\n`
       const chatStream = mikeChatNodeStream(state)
       
-      let fullContent = ''
       for await (const chunk of chatStream) {
         if ('type' in chunk && chunk.type === 'content_chunk') {
-          fullContent += chunk.content
           accumulatedContent += chunk.content
           yield {
             type: 'content_update',
@@ -906,7 +863,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         content: accumulatedContent,
       }
       
-      // 闲聊完成后，直接结束
       yield {
         type: 'complete',
         agent: 'mike',
@@ -917,7 +873,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
       break
     }
 
-    // 执行对应的智能体
     if (state.nextAgent === 'emma' && !state.prd) {
       yield {
         type: 'agent_start',
@@ -925,7 +880,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         content: `📋 **Emma (产品经理)** 正在分析需求...`,
       }
       
-      // 使用流式生成
       let accumulatedContent = `📋 **Emma (产品经理)** 正在分析需求...\n\n`
       const prdStream = emmaPRDNodeStream(state)
       
@@ -934,7 +888,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         if ('type' in chunk && chunk.type === 'content_chunk') {
           fullContent += chunk.content
           accumulatedContent += chunk.content
-          // 实时 yield 生成的内容
           yield {
             type: 'content_update',
             agent: 'emma',
@@ -943,9 +896,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         }
       }
       
-      // 流式生成器结束后，手动获取返回值
-      // 注意：async generator 的 return 值需要通过特殊方式获取
-      // 这里我们直接使用累积的内容更新状态
       if (fullContent) {
         state = {
           ...state,
@@ -953,8 +903,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
           currentStatus: 'designing',
         }
         console.log('Emma PRD generated, length:', fullContent.length)
-      } else {
-        console.warn('Emma PRD stream ended but no content received')
       }
       
       yield {
@@ -973,7 +921,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         content: `🏗️ **Bob (架构师)** 正在设计架构...`,
       }
       
-      // 使用流式生成
       let accumulatedContent = `🏗️ **Bob (架构师)** 正在设计架构...\n\n`
       const archStream = bobArchitectureNodeStream(state)
       
@@ -982,7 +929,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         if ('type' in chunk && chunk.type === 'content_chunk') {
           fullContent += chunk.content
           accumulatedContent += chunk.content
-          // 实时 yield 生成的内容
           yield {
             type: 'content_update',
             agent: 'bob',
@@ -991,7 +937,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         }
       }
       
-      // 流式生成器结束后，手动更新状态
       if (fullContent) {
         state = {
           ...state,
@@ -999,8 +944,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
           currentStatus: 'coding',
         }
         console.log('Bob architecture generated, length:', fullContent.length)
-      } else {
-        console.warn('Bob architecture stream ended but no content received')
       }
       
       yield {
@@ -1022,7 +965,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
           : `💻 **Alex (工程师)** 正在生成代码...`,
       }
       
-      // 使用流式生成
       let accumulatedContent = isFixing
         ? `🔧 **Alex (工程师)** 正在修复代码...\n\n`
         : `💻 **Alex (工程师)** 正在生成代码...\n\n`
@@ -1035,9 +977,7 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         if ('type' in chunk && chunk.type === 'content_chunk') {
           fullContent += chunk.content
           
-          // 检测 JSON 代码块中的文件名，只显示文件名而不是代码内容
           try {
-            // 尝试从累积内容中提取文件名
             const jsonMatch = fullContent.match(/\{[\s\S]*\}/)
             if (jsonMatch) {
               try {
@@ -1045,16 +985,12 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
                 const newFiles = Object.keys(parsed).filter(f => !detectedFiles.includes(f))
                 if (newFiles.length > 0) {
                   detectedFiles.push(...newFiles)
-                  // 只显示文件名列表
                   accumulatedContent = isFixing
                     ? `🔧 **Alex (工程师)** 正在修复代码...\n\n正在处理文件:\n${detectedFiles.map(f => `  - ${f}`).join('\n')}\n`
                     : `💻 **Alex (工程师)** 正在生成代码...\n\n正在生成文件:\n${detectedFiles.map(f => `  - ${f}`).join('\n')}\n`
                 }
-              } catch (e) {
-                // JSON 不完整，继续累积
-              }
+              } catch (e) {}
             } else {
-              // 如果还没有 JSON，检查是否有文件名提示（如 "App.tsx":）
               const filePattern = /["']([^"']+\.(tsx?|jsx?|css|json|html))["']\s*:/g
               const matches = [...fullContent.matchAll(filePattern)]
               const newFiles = matches
@@ -1068,13 +1004,11 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
               }
             }
           } catch (e) {
-            // 解析失败，继续使用原始内容（但限制长度）
             if (accumulatedContent.length < 500) {
               accumulatedContent += chunk.content
             }
           }
           
-          // 实时 yield 生成的内容（只显示文件名）
           yield {
             type: 'content_update',
             agent: 'alex',
@@ -1083,17 +1017,15 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         }
       }
       
-      // 流式生成器结束后，解析代码并更新状态
       if (fullContent) {
         try {
-          // 尝试解析 JSON 格式的代码
           const jsonMatch = fullContent.match(/\{[\s\S]*\}/)
           let code: Record<string, string> = {}
           
           if (jsonMatch) {
-            code = JSON.parse(jsonMatch[0])
+            const parsed = JSON.parse(jsonMatch[0])
+            code = parsed.files || parsed
           } else {
-            // 如果解析失败，创建默认代码
             code = {
               'App.tsx': `import React from 'react';\n\nexport default function App() {\n  return (\n    <div>\n      <h1>${state.userMessage}</h1>\n    </div>\n  );\n}`,
               'index.css': 'body { margin: 0; padding: 20px; font-family: sans-serif; }',
@@ -1109,7 +1041,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
           console.log('Alex code generated, files:', Object.keys(code))
         } catch (error) {
           console.error('Failed to parse code from stream:', error)
-          // 使用默认代码
           state = {
             ...state,
             code: {
@@ -1118,11 +1049,8 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
             currentStatus: 'complete',
           }
         }
-      } else {
-        console.warn('Alex code stream ended but no content received')
       }
       
-      // 代码生成后，尝试创建沙盒并部署
       let sandboxInfo: any = null
       if (state.code) {
         try {
@@ -1144,12 +1072,58 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
               })
               
               if (sandboxResult.type === 'daytona' && sandboxResult.containerId) {
-                // 写入文件到沙盒
+                // 写入所有生成的文件
                 for (const [filePath, content] of Object.entries(state.code)) {
                   await sandboxService.writeFile(sandboxResult.containerId, filePath, content)
                 }
                 
-                // 如果有 package.json，安装依赖
+                // 如果没有 index.html 但有 React 组件，生成一个 index.html
+                if (!state.code['index.html']) {
+                  const mainFile = state.code['App.tsx'] || state.code['App.jsx'] || state.code['app.tsx'] || state.code['app.jsx']
+                  if (mainFile) {
+                    const cssContent = state.code['index.css'] || state.code['App.css'] || state.code['styles.css'] || ''
+                    const indexHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Preview</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    ${cssContent}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback, useEffect, useRef, useMemo } = React;
+    ${mainFile
+      .replace(/export default/g, 'const App =')
+      .replace(/export /g, '')
+      .replace(/import\s+.*?from\s+['"].*?['"];?\s*/g, '')
+      .replace(/import\s+['"].*?['"];?\s*/g, '')
+      .replace(/interface\s+\w+\s*\{[^}]*\}\s*/g, '')
+      .replace(/type\s+\w+\s*=\s*.*?;\s*/g, '')
+      .replace(/:\s*React\.\w+(<[^>]*>)?/g, '')
+      .replace(/useState\s*<[^>]+>/g, 'useState')
+      .replace(/useCallback\s*<[^>]+>/g, 'useCallback')
+      .replace(/useEffect\s*<[^>]+>/g, 'useEffect')
+      .replace(/:\s*(number|string|boolean|void|any)(\s*\|\s*(number|string|boolean|null))?/g, '')
+      .replace(/<(number|string|boolean)(\s*\|\s*null)?>/g, '')
+    }
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>`
+                    await sandboxService.writeFile(sandboxResult.containerId, 'index.html', indexHtml)
+                    console.log('Generated index.html for React app')
+                  }
+                }
+                
                 if (state.code['package.json']) {
                   try {
                     await sandboxService.runCommand(
@@ -1163,21 +1137,72 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
                   }
                 }
                 
-                // 尝试启动服务（如果有启动脚本）
+                // 先杀掉可能占用 8080 端口的默认服务
+                try {
+                  await sandboxService.runCommand(
+                    sandboxResult.containerId,
+                    'pkill -f "port.*8080" || fuser -k 8080/tcp || kill $(lsof -t -i:8080) || true',
+                    true,
+                    10
+                  )
+                  console.log('Killed existing process on port 8080')
+                  // 等待端口释放
+                  await new Promise(resolve => setTimeout(resolve, 1000))
+                } catch (error) {
+                  // 忽略错误，可能没有进程在运行
+                  console.log('No existing process on port 8080 or failed to kill')
+                }
+                
+                // 启动 Web 服务器
+                let serverStarted = false
+                
                 if (state.code['package.json']) {
                   try {
                     const pkg = JSON.parse(state.code['package.json'])
-                    if (pkg.scripts && pkg.scripts.start) {
+                    if (pkg.scripts && (pkg.scripts.start || pkg.scripts.dev)) {
+                      const startCmd = pkg.scripts.dev ? 'npm run dev' : 'npm start'
+                      // 设置 PORT 和 HOST 确保服务器绑定到正确的地址
                       await sandboxService.runCommand(
                         sandboxResult.containerId,
-                        'cd /workspace && npm start',
+                        `cd /workspace && PORT=8080 HOST=0.0.0.0 ${startCmd}`,
                         false
                       )
+                      serverStarted = true
                     }
                   } catch (error) {
-                    console.error('Failed to start server:', error)
+                    console.error('Failed to start npm server:', error)
                   }
                 }
+                
+                // 如果没有通过 npm 启动服务器，使用 Python 简单 HTTP 服务器
+                if (!serverStarted) {
+                  try {
+                    // 必须绑定到 0.0.0.0 才能从外部访问
+                    await sandboxService.runCommand(
+                      sandboxResult.containerId,
+                      'cd /workspace && python3 -m http.server 8080 --bind 0.0.0.0',
+                      false
+                    )
+                    console.log('Started Python HTTP server on port 8080 (0.0.0.0)')
+                  } catch (error) {
+                    console.error('Failed to start Python HTTP server:', error)
+                    // 尝试使用 npx serve 作为备选（默认绑定 0.0.0.0）
+                    try {
+                      await sandboxService.runCommand(
+                        sandboxResult.containerId,
+                        'cd /workspace && npx -y serve -l 8080 --no-clipboard',
+                        false
+                      )
+                      console.log('Started npx serve on port 8080')
+                    } catch (serveError) {
+                      console.error('Failed to start any HTTP server:', serveError)
+                    }
+                  }
+                }
+                
+                // 等待服务器启动
+                await new Promise(resolve => setTimeout(resolve, 3000))
+                console.log('Web server should be ready now')
                 
                 sandboxInfo = {
                   sandboxId: sandboxResult.containerId,
@@ -1187,7 +1212,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
               }
             } catch (error) {
               console.error('Failed to create sandbox:', error)
-              // 继续使用浏览器预览
             }
           }
         } catch (error) {
@@ -1195,11 +1219,32 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         }
       }
       
-      const sandboxNote = sandboxInfo
-        ? `\n\n🌐 **应用已部署到沙盒环境**\n- 访问地址: ${sandboxInfo.websiteUrl}\n- VNC 远程桌面: ${sandboxInfo.vncUrl}`
-        : ''
+      // 如果没有沙盒环境，生成静态预览 HTML
+      if (!sandboxInfo && state.code) {
+        try {
+          const { generatePreviewHTMLFromCode } = await import('../services/verify')
+          const html = generatePreviewHTMLFromCode(state.code)
+          sandboxInfo = {
+            sandboxId: 'static-preview',
+            websiteUrl: null,
+            vncUrl: null,
+            previewHtml: html,
+            type: 'static'
+          }
+        } catch (error) {
+          console.error('Failed to generate static preview:', error)
+        }
+      }
       
-      // 生成代码 artifact
+      let sandboxNote = ''
+      if (sandboxInfo) {
+        if (sandboxInfo.type === 'daytona') {
+          sandboxNote = `\n\n🌐 **应用已部署到沙盒环境**\n- 访问地址: ${sandboxInfo.websiteUrl}\n- VNC 远程桌面: ${sandboxInfo.vncUrl}`
+        } else if (sandboxInfo.type === 'static') {
+          sandboxNote = `\n\n📄 **已生成静态预览**\n- 可以在右侧查看预览效果`
+        }
+      }
+      
       const codeArtifact = {
         id: 'code-1',
         type: 'code' as const,
@@ -1215,7 +1260,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         artifacts: state.code ? [codeArtifact] : [],
       }
       
-      // 代码生成后，自动验证预览（无论是否有沙盒 URL）
       if (state.code) {
         yield {
           type: 'agent_start',
@@ -1225,8 +1269,6 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
         
         try {
           const { verifyPreview, generateVerificationFeedback } = await import('../services/verify')
-          
-          // 优先使用沙盒 URL，否则使用代码生成预览
           const previewUrl = sandboxInfo?.websiteUrl
           
           const verifyResult = await verifyPreview({
@@ -1240,39 +1282,27 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
           const feedback = generateVerificationFeedback(verifyResult)
           
           if (!verifyResult.passed && verifyResult.needsImprovement) {
-            // 发现问题，需要修复
             yield {
               type: 'agent_start',
               agent: 'mike',
               content: feedback,
             }
             
-            // 自动触发修复流程
             state.currentStatus = 'coding'
             state.nextAgent = 'alex'
-            // 保存原始用户消息（如果还没有保存）
             if (!state.originalUserMessage) {
               state.originalUserMessage = state.userMessage.split('\n\n⚠️')[0].split('\n\n🔍')[0]
             }
-            // 确保保留当前代码（修复时不应该丢失代码）
-            if (!state.code || Object.keys(state.code).length === 0) {
-              console.warn('⚠️ 修复时发现代码为空，这不应该发生')
-            }
-            // 将问题添加到用户消息中，触发修复（但保持原始需求清晰）
+            
             const issuesText = verifyResult.issues.length > 0 
               ? verifyResult.issues.join('\n')
               : '预览页面存在问题，需要修复'
-            // 使用原始需求 + 修复指令，而不是直接追加错误信息
+            
             const originalReq = state.originalUserMessage
             state.userMessage = `${originalReq}\n\n⚠️ 修复要求：预览页面验证发现问题，请修复以下问题：\n${issuesText}\n\n请确保生成的代码是完整的、可运行的 React 组件，不要包含错误信息文本。`
-            state.isModification = true // 标记为修改模式
-            // 确保代码被保留（修复时不应该丢失）
-            console.log(`🔧 开始修复，当前代码文件: ${state.code ? Object.keys(state.code).join(', ') : '无'}`)
-            
-            // 继续迭代修复（不 break，继续循环）
+            state.isModification = true
             continue
           } else {
-            // 验证通过或只有建议
             yield {
               type: 'agent_complete',
               agent: 'mike',
@@ -1281,24 +1311,17 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
           }
         } catch (error) {
           console.error('Verification error:', error)
-          const verifyErrorMsg = error instanceof Error ? error.message : String(error)
           yield {
             type: 'agent_complete',
             agent: 'mike',
-            content: `⚠️ 验证过程遇到问题: ${verifyErrorMsg}。代码已生成，请手动检查预览页面。`,
+            content: `⚠️ 验证过程遇到问题: ${error instanceof Error ? error.message : String(error)}。代码已生成，请手动检查预览页面。`,
           }
         }
       }
       
-      // 代码生成后，检查是否完成（验证通过后）
-      // 注意：验证可能会触发修复，所以这里不直接设置 complete
-      // 只有在验证通过或没有验证时才完成
       if (state.code) {
-        // 如果验证没有触发修复（currentStatus 不是 'coding'），说明验证通过或没有验证
-        // 设置状态为完成
         if (state.currentStatus !== 'coding') {
           state.currentStatus = 'complete'
-          console.log('Setting status to complete after code generation and verification')
           yield {
             type: 'complete',
             agent: 'mike',
@@ -1310,15 +1333,11 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
             ],
           }
           break
-        } else {
-          // 验证触发了修复，继续循环
-          console.log('Verification triggered fix, continuing loop')
         }
       }
       continue
     }
 
-    // 如果都完成了
     if (state.prd && state.architecture && state.code) {
       yield {
         type: 'complete',
@@ -1333,15 +1352,13 @@ async function* invokeStream({ userMessage, projectId, userId, conversationHisto
       break
     }
     
-    // 定期保存状态（每次迭代后）
     await saveProjectState(projectId, userId, state)
   }
   
-  // 最终保存状态
   await saveProjectState(projectId, userId, state)
 }
 
-// 简化的工作流实现（保留用于兼容）
+// 简化的工作流实现
 export function createMikeAgent() {
   return {
     async invoke({ userMessage, projectId, userId }: {
@@ -1349,13 +1366,11 @@ export function createMikeAgent() {
       projectId: string
       userId: string
     }): Promise<AgentResponse> {
-      // 使用流式工作流，但收集所有结果
       const results: any[] = []
       for await (const chunk of invokeStream({ userMessage, projectId, userId })) {
         results.push(chunk)
       }
       
-      // 返回最后一个完整的结果
       const lastComplete = results.filter(r => r.type === 'complete' || r.type === 'agent_complete').pop()
       if (lastComplete) {
         return {
@@ -1374,7 +1389,6 @@ export function createMikeAgent() {
       }
     },
     
-    // 流式接口
     invokeStream,
   }
 }

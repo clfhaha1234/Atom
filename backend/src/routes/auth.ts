@@ -4,6 +4,10 @@ import { supabase } from '../lib/supabase'
 const router = express.Router()
 
 router.post('/verify', async (req, res) => {
+  if (!supabase) {
+    return res.status(503).json({ error: 'Supabase not configured' })
+  }
+
   const { token } = req.body
   
   try {

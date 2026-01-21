@@ -16,8 +16,11 @@ router.get('/', async (req, res) => {
       return res.status(500).json({ error: 'Database not configured' })
     }
 
+    // 在 null 检查后，保存引用以便 TypeScript 正确推断类型
+    const db = supabase
+
     // 获取项目列表
-    const { data: projects, error: projectsError } = await supabase
+    const { data: projects, error: projectsError } = await db
       .from('projects')
       .select('*')
       .eq('user_id', userId)
@@ -35,7 +38,7 @@ router.get('/', async (req, res) => {
     const projectsWithState = await Promise.all(
       (projects || []).map(async (project: any) => {
         // 获取项目状态
-        const { data: stateData } = await supabase
+        const { data: stateData } = await db
           .from('project_states')
           .select('state, updated_at')
           .eq('project_id', project.id)
@@ -45,7 +48,7 @@ router.get('/', async (req, res) => {
           .maybeSingle()
 
         // 获取最后一条消息（作为对话预览）
-        const { data: lastMessage } = await supabase
+        const { data: lastMessage } = await db
           .from('messages')
           .select('content, role, timestamp')
           .eq('project_id', project.id)
